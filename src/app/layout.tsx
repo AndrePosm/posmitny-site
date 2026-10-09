@@ -8,6 +8,7 @@ import '@fontsource/instrument-serif/400-italic.css';
 import '@fontsource/geist-mono/400.css';
 import '@fontsource/geist-mono/500.css';
 import './globals.css';
+import { Analytics } from '@vercel/analytics/next';
 import { SiteProvider } from '@/components/SiteProvider';
 import { MODE_BOOT_SCRIPT, modeCss } from '@/lib/modes';
 
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <SiteProvider>{children}</SiteProvider>
+        <Analytics />
       </body>
     </html>
   );
