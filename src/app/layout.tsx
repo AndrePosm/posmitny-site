@@ -20,12 +20,16 @@ export const metadata: Metadata = {
   twitter: { card: 'summary_large_image' },
 };
 
+/** Visit any page with ?notrack=1 once on a device to exclude it from analytics (?notrack=0 undoes it). */
+const NOTRACK_SCRIPT = `try{var m=location.search.match(/[?&]notrack=([01])/);if(m){if(m[1]==='1')localStorage.setItem('va-disable','true');else localStorage.removeItem('va-disable')}}catch(e){}`;
+
 export const viewport: Viewport = { width: 'device-width', initialScale: 1 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" data-mode="noon" data-theme="light" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: NOTRACK_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: MODE_BOOT_SCRIPT }} />
         <style dangerouslySetInnerHTML={{ __html: modeCss() }} />
       </head>
