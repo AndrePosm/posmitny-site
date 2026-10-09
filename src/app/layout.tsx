@@ -15,7 +15,8 @@ export const metadata: Metadata = {
   metadataBase: new URL('https://posmitny.com'),
   title: { default: 'André Posmitny · Product builder', template: '%s · André Posmitny' },
   description: 'André Posmitny is a product builder and founder. He takes products from a rough idea to something that works and people actually use. Building Vanclaro Agents and Brizzy.',
-  openGraph: { type: 'website', siteName: 'André Posmitny', locale: 'en' },
+  openGraph: { type: 'website', siteName: 'André Posmitny', locale: 'en', url: '/' },
+  twitter: { card: 'summary_large_image' },
 };
 
 export const viewport: Viewport = { width: 'device-width', initialScale: 1 };
