@@ -31,7 +31,7 @@ export function Intro() {
     <section ref={box} aria-labelledby="intro-title" className="wrap intro">
       <div className="stack gap-20" style={{ maxWidth: 560 }}>
         <p className="eyebrow">Hello there</p>
-        <h1 id="intro-title" className="h1">Hi, I’m André</h1>
+        <h1 id="intro-title" className="h1">Hi, I’m André.</h1>
         <p className="lead">
           I’m a <strong>product builder and founder</strong> with a frontend background who went all in on AI. I take products{' '}
           <strong>from a rough idea to something that works and people actually use</strong>: design, code, integrations and launch.
