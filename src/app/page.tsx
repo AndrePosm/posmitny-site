@@ -34,7 +34,7 @@ export default function WorkPage() {
           {/* Changelog */}
           <Reveal as="section" aria-labelledby="log-title" className="wrap split pt-section">
             <div className="rise stack gap-16" style={{ order: 2 }}>
-              <p className="eyebrow">Changelog</p>
+              <p className="eyebrow">Personal changelog</p>
               <h2 id="log-title" className="h2">From Pascal to AI agents.</h2>
               <p className="muted measure">The short version of how I got here. Each step taught me something I still use.</p>
             </div>
