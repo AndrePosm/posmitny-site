@@ -9,6 +9,7 @@ export const NAV = [
 export const LINKS = {
   email: 'andre@posmitny.com',
   cal: 'https://cal.com/andre-posmitny/15min',
+  vasyl: 'https://vasylposmit.com/',
   linkedin: 'https://www.linkedin.com/in/andr%C3%A9-posmitny-97b784b7/',
   instagram: 'https://www.instagram.com/andrefollowthesun/',
   boosin: 'https://www.instagram.com/boosinmusic/',

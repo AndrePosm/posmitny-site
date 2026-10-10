@@ -103,7 +103,7 @@ export default function WorkPage() {
                   <li>Connects to your CRM and databases to take real actions</li>
                   <li>Works across channels: website, phone and messaging</li>
                 </ul>
-                <p className="muted small">Co-founded with my brother Vasyl.</p>
+                <p className="muted small">Co-founded with my brother <a className="ul" href={LINKS.vasyl}>Vasyl</a>.</p>
                 <a className="ul" href={LINKS.vanclaro} style={{ alignSelf: 'flex-start', fontWeight: 500, marginTop: 6 }}>Visit vanclaro.com</a>
               </div>
               <figure className="flow from-r" style={{ margin: 0, minWidth: 0 }}>
@@ -133,7 +133,7 @@ export default function WorkPage() {
                 <p className="kicker" style={{ color: 'var(--pink)' }}>For people</p>
                 <h3 className="h-project">Brizzy</h3>
                 <p className="muted">An evidence-oriented breathwork app, built as a PWA. Guided patterns for sleep, energy and stress, a calm panda companion and streaks that keep the habit going. Shaped by more than fifteen years of my own practice.</p>
-                <p className="muted small">Co-founded with my brother Vasyl.</p>
+                <p className="muted small">Co-founded with my brother <a className="ul" href={LINKS.vasyl}>Vasyl</a>.</p>
                 <a className="ul" href={LINKS.brizzy} style={{ alignSelf: 'flex-start', fontWeight: 500, marginTop: 6 }}>Visit brizzy.app</a>
               </div>
             </div>
