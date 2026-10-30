@@ -75,7 +75,7 @@ export const TOPICS: FunTopic[] = [
 export const FUN = {
   eyebrow: 'photo',
   title: 'Play with the light.',
-  lead: 'A small darkroom for the photos from Fuerteventura. Change the light, or drop in a photo of your own. It stays on this device.',
+  lead: 'A small darkroom for the photos from Fuerteventura. Grade the light, match a reference, or drop in a roll of your own. It stays on this device.',
 } as const;
 
 export const LOOKS: { id: string; label: string; grade: Grade }[] = [

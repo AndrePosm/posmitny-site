@@ -6,7 +6,7 @@ import { pageMeta } from '@/lib/seo';
 
 export const metadata: Metadata = pageMeta({
   title: 'Photo editor',
-  description: 'A browser darkroom for the Fuerteventura photos, or a photo of your own. Grade the light and download a JPEG. Nothing is uploaded.',
+  description: 'A browser darkroom for the Fuerteventura photos, or a roll of your own. Match a reference, crop for a platform, and download JPEGs. Nothing is uploaded.',
   path: '/fun/photo-editor',
 });
 

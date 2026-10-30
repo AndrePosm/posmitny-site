@@ -117,11 +117,11 @@ export function previewPixels(srcW: number, srcH: number, rotation: number, boxW
   return { cssW: css.w, cssH: css.h, w: Math.max(1, Math.round(css.w * dpr)), h: Math.max(1, Math.round(css.h * dpr)) };
 }
 
-export function exportSize(srcW: number, srcH: number, rotation: number) {
+export function exportSize(srcW: number, srcH: number, rotation: number, maxEdge = MAX_EXPORT) {
   const swapped = turnsOf(rotation) % 180 !== 0;
   const ow = swapped ? srcH : srcW;
   const oh = swapped ? srcW : srcH;
-  const scale = Math.min(1, MAX_EXPORT / Math.max(ow, oh));
+  const scale = Math.min(1, maxEdge / Math.max(ow, oh));
   return { w: Math.max(1, Math.round(ow * scale)), h: Math.max(1, Math.round(oh * scale)) };
 }
 
