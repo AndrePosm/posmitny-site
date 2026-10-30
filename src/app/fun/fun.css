@@ -75,6 +75,28 @@ a.topic:hover img { transform: scale(1.04); }
 .fun-cross { font-size: 13px; }
 .fun-body { padding-top: clamp(28px, 4vw, 48px); padding-bottom: clamp(8px, 2vw, 20px); }
 
+/* The darkroom is a neutral bench in both themes. A tinted page
+   (warm white by day, blue by night) shifts how the photo reads. */
+.ed-room {
+  --page: #3a3a3a;
+  --card: #3a3a3a;
+  --soft: #4a4a4a;
+  --ink: #f3f3f3;
+  --ink-2: #c8c8c8;
+  --line: rgba(255, 255, 255, .16);
+  --shadow: rgba(0, 0, 0, .45);
+  background: #3a3a3a;
+  color: #f3f3f3;
+}
+.ed-room .ed-stage {
+  background: #7f7f7f;
+  border-color: #6e6e6e;
+}
+.ed-room .ed-loading { color: #1a1a1a; }
+.ed-room .ed-cap::before { background: #c8c8c8; }
+.ed-room .range { accent-color: #e6e6e6; }
+.ed-room .ed-thumb.on .ed-pic { box-shadow: 0 0 0 2px #3a3a3a, 0 0 0 4px #f3f3f3; }
+
 .ed-film {
   display: flex;
   gap: 12px;
@@ -209,7 +231,7 @@ a.topic:hover img { transform: scale(1.04); }
   position: absolute;
   box-sizing: border-box;
   border: 1.5px solid #fff;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35), 0 0 0 999px rgba(12, 14, 22, .42);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .35), 0 0 0 999px rgba(0, 0, 0, .42);
   cursor: grab;
   touch-action: none;
 }

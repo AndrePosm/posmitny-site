@@ -12,7 +12,7 @@ export const metadata: Metadata = pageMeta({
 
 export default function PhotoEditorPage() {
   return (
-    <main aria-labelledby="photo-title">
+    <main className="ed-room" aria-labelledby="photo-title">
       <div className="wrap">
         <div className="fun-intro">
           <p className="eyebrow">{FUN.eyebrow}</p>
