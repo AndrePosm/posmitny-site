@@ -2,8 +2,16 @@ import { Footer } from '@/components/Footer';
 import { Reveal } from '@/components/Reveal';
 import { Scene } from '@/components/scene/Scene';
 import { Intro } from '@/components/work/Intro';
+import { HOME, LINKS } from '@/content/site';
 import { BELIEFS, CHANGELOG, STACK } from '@/content/work';
-import { LINKS } from '@/content/site';
+import { pageMeta } from '@/lib/seo';
+
+export const metadata = pageMeta({
+  title: HOME.title,
+  description: HOME.description,
+  path: '/',
+  absoluteTitle: true,
+});
 
 export default function WorkPage() {
   return (
