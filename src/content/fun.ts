@@ -1,8 +1,12 @@
-// Copy and looks for the Fun page darkroom (English).
+// Copy and looks for Fun: the hub, and the photo darkroom (English).
+
+import { PHOTOS } from './me';
 
 export type Grade = {
   exposure: number;
   contrast: number;
+  highlights: number;
+  shadows: number;
   warmth: number;
   saturation: number;
   fade: number;
@@ -13,6 +17,8 @@ export type Grade = {
 export const NEUTRAL_GRADE: Grade = {
   exposure: 0,
   contrast: 0,
+  highlights: 0,
+  shadows: 0,
   warmth: 0,
   saturation: 0,
   fade: 0,
@@ -22,8 +28,52 @@ export const NEUTRAL_GRADE: Grade = {
 
 const grade = (partial: Partial<Grade>): Grade => ({ ...NEUTRAL_GRADE, ...partial });
 
-export const FUN = {
+export const HUB = {
   eyebrow: 'fun',
+  title: 'A place to play.',
+  lead: 'The work is serious. This page isn’t. A darkroom is open, and games will turn up here.',
+} as const;
+
+type TopicImage = { src: string; w: number; h: number };
+
+type TopicBase = {
+  id: string;
+  title: string;
+  /** Short status, shown on the card. */
+  label: string;
+  body: string;
+  image?: TopicImage;
+  /** Quiet mark in the frame when there is no picture yet. */
+  mark?: string;
+};
+
+export type FunTopic = TopicBase & ({ status: 'live'; href: string; cta: string } | { status: 'soon' });
+
+const volcano = PHOTOS.volcano;
+
+export const TOPICS: FunTopic[] = [
+  {
+    id: 'photo',
+    title: 'Photo',
+    status: 'live',
+    label: 'live',
+    body: 'Change the light on the Fuerteventura photos, or drop in one of your own. It stays on this device.',
+    href: '/fun/photo-editor',
+    cta: 'Open the darkroom',
+    image: { src: volcano.src, w: volcano.w, h: volcano.h },
+  },
+  {
+    id: 'games',
+    title: 'Games',
+    status: 'soon',
+    label: 'coming soon',
+    body: 'A few quiet games, played right here in the browser. Nothing to open yet.',
+    mark: 'soon',
+  },
+];
+
+export const FUN = {
+  eyebrow: 'photo',
   title: 'Play with the light.',
   lead: 'A small darkroom for the photos from Fuerteventura. Change the light, or drop in a photo of your own. It stays on this device.',
 } as const;
@@ -38,18 +88,11 @@ export const LOOKS: { id: string; label: string; grade: Grade }[] = [
   { id: 'film', label: 'Faded film', grade: grade({ exposure: 12, contrast: -18, warmth: 16, saturation: -28, fade: 48, grain: 32, vignette: 20 }) },
 ];
 
+const GRADE_KEYS = Object.keys(NEUTRAL_GRADE) as (keyof Grade)[];
+
 export function matchLook(value: Grade): string {
   for (const look of LOOKS) {
-    const g = look.grade;
-    if (
-      g.exposure === value.exposure &&
-      g.contrast === value.contrast &&
-      g.warmth === value.warmth &&
-      g.saturation === value.saturation &&
-      g.fade === value.fade &&
-      g.grain === value.grain &&
-      g.vignette === value.vignette
-    ) return look.id;
+    if (GRADE_KEYS.every((key) => look.grade[key] === value[key])) return look.id;
   }
   return 'custom';
 }
@@ -71,6 +114,8 @@ function signed(v: number, low: string, lower: string, mid: string, higher: stri
 export const ADJUSTMENTS: { key: keyof Grade; label: string; min: number; max: number; hint: (v: number) => string }[] = [
   { key: 'exposure', label: 'Exposure', min: -100, max: 100, hint: (v) => signed(v, 'Dark', 'A bit dark', 'As shot', 'A bit bright', 'Bright') },
   { key: 'contrast', label: 'Contrast', min: -100, max: 100, hint: (v) => signed(v, 'Flat', 'Soft', 'As shot', 'Punchy', 'Hard') },
+  { key: 'highlights', label: 'Highlights', min: -100, max: 100, hint: (v) => signed(v, 'Recovered', 'Pulled in', 'As shot', 'Brighter', 'Blown') },
+  { key: 'shadows', label: 'Shadows', min: -100, max: 100, hint: (v) => signed(v, 'Crushed', 'Deeper', 'As shot', 'Opened', 'Lifted') },
   { key: 'warmth', label: 'Warmth', min: -100, max: 100, hint: (v) => signed(v, 'Cold', 'Cool', 'Neutral', 'Warm', 'Golden') },
   { key: 'saturation', label: 'Saturation', min: -100, max: 100, hint: (v) => signed(v, 'Grey', 'Muted', 'As shot', 'Rich', 'Vivid') },
   { key: 'fade', label: 'Fade', min: 0, max: 100, hint: (v) => steps(v, [[0, 'None'], [18, 'A lift'], [45, 'Faded']], 'Washed') },

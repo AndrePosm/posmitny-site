@@ -7,11 +7,13 @@ import { Instagram } from '@/components/Icons';
 import { DayGallery } from '@/components/me/DayGallery';
 import { BreatheButton } from '@/components/me/BreatheButton';
 import { LINKS } from '@/content/site';
+import { pageMeta } from '@/lib/seo';
 
-export const metadata: Metadata = {
+export const metadata: Metadata = pageMeta({
   title: 'Me',
   description: 'Follow the sun. Photography, breathwork and a day on Fuerteventura, André Posmitny’s place of power.',
-};
+  path: '/me',
+});
 
 export default function MePage() {
   return (

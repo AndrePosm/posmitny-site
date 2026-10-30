@@ -1,5 +1,12 @@
 // Shared copy and links. English only for now; Swedish and Spanish dictionaries will sit next to this file.
 
+export const SITE_URL = 'https://posmitny.com';
+
+export const HOME = {
+  title: 'André Posmitny · Product builder',
+  description: 'André Posmitny is a product builder and founder. He takes products from a rough idea to something that works and people actually use. Building Vanclaro Agents and Brizzy.',
+} as const;
+
 export const NAV = [
   { href: '/', label: 'Work' },
   { href: '/fun', label: 'Fun' },

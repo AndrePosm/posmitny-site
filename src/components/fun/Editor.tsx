@@ -10,6 +10,7 @@ const MAX_FILE = 25 * 1024 * 1024;
 
 type Source = { kind: 'site'; key: PhotoKey } | { kind: 'upload' };
 type Upload = { url: string; name: string };
+type Adjustment = (typeof ADJUSTMENTS)[number];
 
 function shortName(cap: string): string {
   const i = cap.indexOf('·');
@@ -25,14 +26,86 @@ function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'photo';
 }
 
+/** One grade slider. A double-click or a double-tap puts it back to its default. */
+function GradeSlider({ spec, value, onChange }: { spec: Adjustment; value: number; onChange: (value: number) => void }) {
+  const lastTap = useRef<{ t: number; x: number; y: number } | null>(null);
+  const down = useRef<{ x: number; y: number } | null>(null);
+  const ignore = useRef(false);
+  const fallback = NEUTRAL_GRADE[spec.key];
+
+  function resetToDefault() {
+    ignore.current = true;
+    onChange(fallback);
+    requestAnimationFrame(() => {
+      onChange(fallback);
+      requestAnimationFrame(() => {
+        ignore.current = false;
+      });
+    });
+  }
+
+  return (
+    <div
+      className="ed-slider"
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        resetToDefault();
+      }}
+      onPointerDown={(e) => {
+        down.current = { x: e.clientX, y: e.clientY };
+      }}
+      onPointerUp={(e) => {
+        if (e.pointerType === 'mouse') return;
+        const start = down.current;
+        down.current = null;
+        if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 12) {
+          lastTap.current = null;
+          return;
+        }
+        const now = performance.now();
+        const prev = lastTap.current;
+        if (prev && now - prev.t < 350 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 32) {
+          lastTap.current = null;
+          resetToDefault();
+          return;
+        }
+        lastTap.current = { t: now, x: e.clientX, y: e.clientY };
+      }}
+    >
+      <label htmlFor={`ed-${spec.key}`}>
+        <span>{spec.label}</span>
+        <span>{spec.hint(value)}</span>
+      </label>
+      <input
+        id={`ed-${spec.key}`}
+        className="range"
+        type="range"
+        min={spec.min}
+        max={spec.max}
+        step={1}
+        value={value}
+        aria-valuetext={spec.hint(value)}
+        title="Double-click or double-tap to reset"
+        onChange={(e) => {
+          if (ignore.current) {
+            e.currentTarget.value = String(fallback);
+            return;
+          }
+          onChange(Number(e.target.value));
+        }}
+      />
+    </div>
+  );
+}
+
 /** Grade a frame from the island, or one of your own. Everything stays in the browser. */
 export function Editor() {
   const [source, setSource] = useState<Source>({ kind: 'site', key: START });
   const [upload, setUpload] = useState<Upload | null>(null);
   const [grade, setGrade] = useState<Grade>(NEUTRAL_GRADE);
-  const [look, setLook] = useState('original');
   const [rotation, setRotation] = useState(0);
   const [flip, setFlip] = useState(false);
+  const [bw, setBw] = useState(false);
   const [comparing, setComparing] = useState(false);
   const [ready, setReady] = useState(false);
   const [drag, setDrag] = useState(false);
@@ -49,9 +122,11 @@ export function Editor() {
   const paintRef = useRef<() => void>(() => {});
 
   const frame: Frame = { rotation, flip };
+  const look = matchLook(grade);
   const caption = source.kind === 'site' ? PHOTOS[source.key].cap : (upload?.name ?? 'Your photo');
   const alt = source.kind === 'site' ? PHOTOS[source.key].alt : 'Your photo';
   const lookLabel = LOOKS.find((l) => l.id === look)?.label ?? 'Tweaked';
+  const picture = bw ? ' Black and white.' : '';
 
   const paint = useCallback(() => {
     const img = imgRef.current;
@@ -70,8 +145,9 @@ export function Editor() {
     canvas.style.height = `${size.cssH}px`;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    paintGrade(ctx, img, size.w, size.h, comparing ? NEUTRAL_GRADE : grade, { rotation, flip });
-  }, [grade, rotation, flip, comparing]);
+    // Black and white is a view, so compare stays in it and the grade itself is unchanged.
+    paintGrade(ctx, img, size.w, size.h, comparing ? NEUTRAL_GRADE : grade, { rotation, flip }, bw);
+  }, [grade, rotation, flip, comparing, bw]);
 
   useEffect(() => {
     paintRef.current = paint;
@@ -158,23 +234,20 @@ export function Editor() {
     const next = LOOKS.find((l) => l.id === id);
     if (!next) return;
     setGrade(next.grade);
-    setLook(id);
   }
 
-  function setPart(key: keyof Grade, value: number) {
-    const next = { ...grade, [key]: value };
-    setGrade(next);
-    setLook(matchLook(next));
-  }
+  const setPart = useCallback((key: keyof Grade, value: number) => {
+    setGrade((prev) => ({ ...prev, [key]: value }));
+  }, []);
 
   function reset() {
     setGrade(NEUTRAL_GRADE);
-    setLook('original');
     setRotation(0);
     setFlip(false);
+    setBw(false);
   }
 
-  async function download() {
+  async function download(asBw: boolean) {
     const img = imgRef.current;
     const canvas = document.createElement('canvas');
     if (!img?.naturalWidth || saving.current) return;
@@ -185,14 +258,15 @@ export function Editor() {
       canvas.height = size.h;
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('no context');
-      paintGrade(ctx, img, size.w, size.h, grade, frame);
+      paintGrade(ctx, img, size.w, size.h, grade, frame, asBw);
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
       if (!blob) throw new Error('no blob');
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const base = source.kind === 'site' ? source.key : slug(upload?.name ?? 'photo');
+      const lookSlug = look === 'custom' ? 'tweaked' : look;
       a.href = url;
-      a.download = `posmitny-${base}-${look === 'custom' ? 'tweaked' : look}.jpg`;
+      a.download = `posmitny-${base}-${lookSlug}${asBw ? '-bw' : ''}.jpg`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -209,6 +283,10 @@ export function Editor() {
     e.currentTarget.setPointerCapture(e.pointerId);
     setComparing(true);
   }
+
+  const stageLabel = comparing
+    ? `${alt}. Original, without the grade.${picture}`
+    : `${alt}. ${lookLabel}.${picture}`;
 
   return (
     <div className="fun-body">
@@ -245,7 +323,7 @@ export function Editor() {
           </span>
         </label>
       </div>
-      {error && <p className="ed-error" role="alert">{error}</p>}
+      {error ? <p className="ed-error" role="alert">{error}</p> : null}
 
       <div className="ed-grid">
         <div className="ed-stage-wrap">
@@ -275,10 +353,10 @@ export function Editor() {
             }}
           >
             <div className="ed-fit" ref={fitRef}>
-              <canvas ref={canvasRef} role="img" aria-label={comparing ? `${alt}. Original, without the grade.` : `${alt}. ${lookLabel}.`} style={{ visibility: ready ? 'visible' : 'hidden' }} />
+              <canvas ref={canvasRef} role="img" aria-label={stageLabel} style={{ visibility: ready ? 'visible' : 'hidden' }} />
             </div>
-            {!ready && <p className="ed-loading">Loading the frame.</p>}
-            {drag && <div className="ed-drop">Drop the photo</div>}
+            {!ready ? <p className="ed-loading">Loading the frame.</p> : null}
+            {drag ? <div className="ed-drop">Drop the photo</div> : null}
             <div className="ed-frame">
               <button type="button" aria-label="Rotate left" onClick={() => setRotation((r) => (r + 270) % 360)}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
@@ -291,7 +369,7 @@ export function Editor() {
               </button>
             </div>
           </div>
-          <p className="ed-cap">{comparing ? `${caption} · original` : caption}</p>
+          <p className="ed-cap">{comparing ? `${caption} · original` : caption}{bw ? ' · black and white' : ''}</p>
         </div>
 
         <aside className="card ed-panel" aria-label="Grade">
@@ -302,8 +380,20 @@ export function Editor() {
 
           <div className="stack" style={{ gap: 8 }}>
             <span className="ed-label">
+              <span id="ed-view-label">View</span>
+              <span className="muted">{bw ? 'Black and white' : 'Colour'}</span>
+            </span>
+            <div className="chips" role="group" aria-labelledby="ed-view-label">
+              <button type="button" className={bw ? 'chip' : 'chip on'} aria-pressed={!bw} onClick={() => setBw(false)}>Colour</button>
+              <button type="button" className={bw ? 'chip on' : 'chip'} aria-pressed={bw} onClick={() => setBw(true)}>B&amp;W</button>
+            </div>
+            <p id="ed-bw-note" className="ed-note">A view for the tones. Download keeps the colour.</p>
+          </div>
+
+          <div className="stack" style={{ gap: 8 }}>
+            <span className="ed-label">
               <span>Looks</span>
-              {look === 'custom' && <span className="muted">Tweaked</span>}
+              {look === 'custom' ? <span className="muted">Tweaked</span> : null}
             </span>
             <div className="chips">
               {LOOKS.map((l) => (
@@ -316,27 +406,14 @@ export function Editor() {
 
           <div className="ed-sliders">
             {ADJUSTMENTS.map((a) => (
-              <div key={a.key} className="ed-slider">
-                <label htmlFor={`ed-${a.key}`}>
-                  <span>{a.label}</span>
-                  <span>{a.hint(grade[a.key])}</span>
-                </label>
-                <input
-                  id={`ed-${a.key}`}
-                  className="range"
-                  type="range"
-                  min={a.min}
-                  max={a.max}
-                  step={1}
-                  value={grade[a.key]}
-                  onChange={(e) => setPart(a.key, Number(e.target.value))}
-                />
-              </div>
+              <GradeSlider key={a.key} spec={a} value={grade[a.key]} onChange={(value) => setPart(a.key, value)} />
             ))}
           </div>
+          <p className="ed-note">Double-click or double-tap a slider to reset it.</p>
 
           <div className="ed-actions">
-            <button type="button" className="btn" onClick={download} disabled={!ready}>Download</button>
+            <button type="button" className="btn" onClick={() => download(false)} disabled={!ready}>Download</button>
+            <button type="button" className="ed-ghost" onClick={() => download(true)} disabled={!ready}>Save as B&amp;W</button>
             <button
               type="button"
               className="ed-ghost"

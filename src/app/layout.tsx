@@ -10,12 +10,13 @@ import '@fontsource/geist-mono/500.css';
 import './globals.css';
 import { Analytics } from '@vercel/analytics/next';
 import { SiteProvider } from '@/components/SiteProvider';
+import { HOME, SITE_URL } from '@/content/site';
 import { MODE_BOOT_SCRIPT, modeCss } from '@/lib/modes';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://posmitny.com'),
-  title: { default: 'André Posmitny · Product builder', template: '%s · André Posmitny' },
-  description: 'André Posmitny is a product builder and founder. He takes products from a rough idea to something that works and people actually use. Building Vanclaro Agents and Brizzy.',
+  metadataBase: new URL(SITE_URL),
+  title: { default: HOME.title, template: '%s · André Posmitny' },
+  description: HOME.description,
   openGraph: { type: 'website', siteName: 'André Posmitny', locale: 'en', url: '/' },
   twitter: { card: 'summary_large_image' },
 };

@@ -1,7 +1,12 @@
 import type { MetadataRoute } from 'next';
+import { SITE_URL } from '@/content/site';
 
-const BASE = 'https://posmitny.com';
+const ROUTES = ['/', '/me', '/fun', '/fun/photo-editor'] as const;
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  return ['/', '/me', '/fun'].map((path) => ({ url: BASE + (path === '/' ? '' : path), changeFrequency: 'monthly', priority: path === '/' ? 1 : 0.7 }));
+  return ROUTES.map((path) => ({
+    url: SITE_URL + (path === '/' ? '' : path),
+    changeFrequency: 'monthly',
+    priority: path === '/' ? 1 : 0.7,
+  }));
 }
