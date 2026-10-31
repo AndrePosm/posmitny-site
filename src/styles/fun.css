@@ -78,6 +78,15 @@ a.topic:hover img { transform: scale(1.04); }
 
 html:has(.dk),
 html:has(.dk) body {
+  --dk-bg: #1c1c1e;
+  --dk-panel: #232326;
+  --dk-line: #323236;
+  --dk-t1: #ededef;
+  --dk-t2: #9a9aa0;
+  --dk-acc: #4c8dff;
+  --dk-canvas: #7f7f7f;
+  --dk-raise: #2c2c30;
+  --dk-raise-2: #3a3a3f;
   background: #1c1c1e;
 }
 
@@ -130,12 +139,23 @@ html:has(.dk) body {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
   padding: 0 10px;
   border-bottom: 1px solid var(--dk-line);
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
 }
-.dk-bar::-webkit-scrollbar { display: none; }
+.dk-bar-scroll {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.dk-bar-scroll::-webkit-scrollbar { display: none; }
 .dk-brand { margin: 0; flex: 0 0 auto; font: 600 13px/1 var(--sans); }
 .dk-brand a { color: inherit; text-decoration: none; }
 .dk-sp { flex: 1 0 8px; }
@@ -275,8 +295,8 @@ html:has(.dk) body {
   gap: 4px;
   padding: 4px;
   border-radius: 10px;
-  background: rgba(28, 28, 30, .85);
-  backdrop-filter: blur(8px);
+  border: 1px solid #323236;
+  background-color: #1c1c1e;
 }
 .dk-float button {
   min-width: 32px;
@@ -392,8 +412,8 @@ html:has(.dk) body {
 .dk-chev.on { transform: rotate(90deg); }
 .dk-sec-in { animation: dk-in 180ms ease; }
 @keyframes dk-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: none; }
+  from { transform: translateY(-4px); }
+  to { transform: none; }
 }
 .dk-sec.is-shut .dk-sec-body { display: none; }
 .dk-hint { margin: 8px 0 0; color: var(--dk-t2); font-size: 12px; line-height: 1.4; }
@@ -589,75 +609,105 @@ html:has(.dk) body {
 .dk-narrow { display: none; }
 .dk-toast {
   position: absolute;
-  z-index: 40;
+  z-index: 70;
   left: 50%;
   top: 58px;
   transform: translateX(-50%);
   padding: 8px 14px;
   border-radius: 999px;
-  background: var(--dk-panel);
-  border: 1px solid var(--dk-line);
-  color: var(--dk-t1);
+  background-color: #232326;
+  border: 1px solid #323236;
+  color: #ededef;
+  opacity: 1;
   font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
   animation: dk-toast 180ms ease;
   pointer-events: none;
 }
 @keyframes dk-toast {
-  from { opacity: 0; transform: translateX(-50%) translateY(-8px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { transform: translateX(-50%) translateY(-8px); }
+  to { transform: translateX(-50%) translateY(0); }
 }
 .dk-menu {
   position: fixed;
-  z-index: 50;
-  min-width: 188px;
+  z-index: 80;
+  min-width: min(188px, calc(100% - 16px));
+  max-width: calc(100% - 16px);
   padding: 4px;
   border-radius: 10px;
-  background: var(--dk-panel);
-  border: 1px solid var(--dk-line);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, .35);
+  background-color: #232326;
+  color: #ededef;
+  opacity: 1;
+  border: 1px solid #323236;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.4;
+  color-scheme: dark;
+  isolation: isolate;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 .dk-menu button {
   display: block;
   width: 100%;
   text-align: left;
   border: 0;
-  background: transparent;
-  color: var(--dk-t1);
+  background-color: transparent;
+  color: #ededef;
+  opacity: 1;
   border-radius: 7px;
   padding: 8px 10px;
   cursor: pointer;
+  font-family: inherit;
   font-size: 13px;
+  -webkit-appearance: none;
+  appearance: none;
 }
+.dk-menu button:disabled { opacity: .45; cursor: default; }
 .dk-menu button[aria-checked="true"] { color: #fff; }
-.dk-menu button[aria-checked="true"]::before { content: "✓  "; color: var(--dk-acc); }
-.dk-menu button:hover { background: var(--dk-raise); }
-.dk-menu hr { border: 0; border-top: 1px solid var(--dk-line); margin: 4px 0; }
+.dk-menu button[aria-checked="true"]::before { content: "✓  "; color: #4c8dff; }
+.dk-menu button:hover { background-color: #2c2c30; }
+.dk-menu hr { border: 0; border-top: 1px solid #323236; margin: 4px 0; }
 .dk-help {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 90;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, .45);
+  background-color: rgba(0, 0, 0, .55);
 }
 .dk-help-card {
   width: min(420px, calc(100% - 32px));
-  background: var(--dk-panel);
-  color: var(--dk-t1);
-  border: 1px solid var(--dk-line);
+  background-color: #232326;
+  color: #ededef;
+  opacity: 1;
+  border: 1px solid #323236;
   border-radius: 12px;
   padding: 16px 18px 18px;
-  animation: dk-in 180ms ease;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55);
+  font-family: var(--sans);
+  color-scheme: dark;
+  isolation: isolate;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  animation: dk-pop 180ms ease;
+}
+@keyframes dk-pop {
+  from { transform: translateY(-4px); }
+  to { transform: none; }
 }
 .dk-help-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.dk-help-h h2 { margin: 0; font-size: 16px; }
+.dk-help-h h2 { margin: 0; font-family: var(--sans); font-weight: 600; letter-spacing: 0; font-size: 16px; }
+.dk-help-card .dk-hint { color: #9a9aa0; }
+.dk-help-card .dk-icon { color: #ededef; background-color: transparent; -webkit-appearance: none; appearance: none; }
 .dk-keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin-top: 14px; }
 .dk-keys kbd {
   font-family: var(--mono);
   font-size: 12px;
-  color: var(--dk-t1);
+  color: #ededef;
 }
-.dk-keys span { color: var(--dk-t2); }
+.dk-keys span { color: #9a9aa0; }
 
 @media (max-width: 800px) {
   .dk {
@@ -688,10 +738,11 @@ html:has(.dk) body {
     border-top: 1px solid var(--dk-line);
     border-radius: 14px 14px 0 0;
     transform: translateY(110%);
-    opacity: 0;
+    opacity: 1;
+    background-color: #232326;
     pointer-events: none;
     visibility: hidden;
-    transition: transform 180ms ease, opacity 180ms ease;
+    transition: transform 180ms ease;
   }
   .dk-panel.on {
     transform: none;
@@ -703,12 +754,14 @@ html:has(.dk) body {
   .dk-panel .dk-sec:not(.is-shut) { display: block; }
   .dk-cell, .dk-thumb, .dk-add, .dk-add span { height: 56px; }
   .dk-thumb { width: 78px; }
+  .dk-bar { gap: 4px; padding: 0 8px; }
+  .dk-bar-scroll { gap: 4px; }
   .dk-go {
-    position: sticky;
-    right: 0;
-    z-index: 2;
-    background: var(--dk-bg);
-    box-shadow: -10px 0 10px var(--dk-bg);
+    position: static;
+    flex: 0 0 auto;
+    margin-left: 4px;
+    background-color: transparent;
+    box-shadow: none;
   }
   .dk-film { position: relative; z-index: 26; background: var(--dk-bg); }
   .dk-tabs {
