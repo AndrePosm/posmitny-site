@@ -10,6 +10,7 @@ import { exportJpeg } from './exportClient';
 import { MAX_FILE, MAX_ROLL, isImage, loadImage, saveBlob, shortName, slug, stem } from './files';
 import { matchToReference } from './match';
 import { paintGrade, previewPixels, type Frame } from './paint';
+import { blendedCanvas, peekSkin, prepareSkin, releaseSkin } from './skin';
 import { EXPORTS, exportById, type ExportId } from './presets';
 import { zipStore } from './zip';
 import { GradeSlider } from './editor/Slider';
@@ -31,11 +32,19 @@ import { thumbKey, useLookThumbs } from './editor/useThumbs';
 
 const START: PhotoKey = 'volcano';
 const SPEC = Object.fromEntries(ADJUSTMENTS.map((item) => [item.key, item])) as Record<keyof Grade, (typeof ADJUSTMENTS)[number]>;
+const SKIN_SPEC = {
+  key: 'skin',
+  label: 'Skin',
+  min: 0,
+  max: 100,
+  hint: (value: number) => (value === 0 ? 'Off' : value < 34 ? 'Light' : value < 67 ? 'Soft' : 'Smooth'),
+};
 const TABS: SecId[] = ['looks', 'light', 'colour', 'effects', 'export'];
 const TAB_LABEL: Record<SecId, string> = {
   looks: 'Looks',
   light: 'Light',
   colour: 'Colour',
+  retouch: 'Retouch',
   effects: 'Effects',
   export: 'Export',
 };
@@ -72,6 +81,7 @@ function photoKey(id: string): PhotoKey | null {
 }
 
 type Toast = { text: string; tone: 'ok' | 'err' };
+type SkinNote = 'off' | 'loading' | 'ready' | 'empty' | 'error';
 type MenuKind = 'sync' | 'export';
 type Shot = { img: HTMLImageElement; src: string };
 
@@ -155,6 +165,7 @@ export function Editor() {
   const [open, setOpen] = useState(DEFAULT_OPEN);
   const [storeReady, setStoreReady] = useState(false);
   const [sheet, setSheet] = useState<SecId | null>(null);
+  const [skinNote, setSkinNote] = useState<SkinNote>('off');
   const [mobile, setMobile] = useState(false);
   const [menu, setMenu] = useState<MenuKind | null>(null);
   const [menuPos, setMenuPos] = useState({ top: 0, right: 8 });
@@ -183,6 +194,7 @@ export function Editor() {
   const presetRef = useRef(presetId);
   const orderRef = useRef<string[]>([]);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const srcRef = useRef('');
   const fitRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const shotRef = useRef<HTMLDivElement>(null);
@@ -229,11 +241,12 @@ export function Editor() {
   const synced = orderedIds.filter((id) => photos[id] && sameGrade(photos[id].grade, grade)).length;
   const exportIds = selection.length ? orderedIds.filter((id) => selection.includes(id)) : [activeId];
   const locked = busy !== '';
-  const activeSrc = (() => {
+  srcRef.current = (() => {
     const key = photoKey(activeId);
     if (key) return PHOTOS[key].src;
     return uploads.find((item) => `u:${item.id}` === activeId)?.url ?? '';
   })();
+  const activeSrc = srcRef.current;
   const activeName = (() => {
     const key = photoKey(activeId);
     if (key) return shortName(PHOTOS[key].cap);
@@ -283,8 +296,9 @@ export function Editor() {
     const viewFrame = { rotation, flip: photo.flip };
     const mono = bwRef.current;
     const showOriginal = comparingRef.current;
+    const graded = showOriginal || photo.skin <= 0 ? img : (blendedCanvas(srcRef.current, photo.skin) ?? img);
     if (showOriginal || !splitRef.current) {
-      paintGrade(ctx, img, size.w, size.h, showOriginal ? NEUTRAL_GRADE : photo.grade, viewFrame, mono);
+      paintGrade(ctx, graded, size.w, size.h, showOriginal ? NEUTRAL_GRADE : photo.grade, viewFrame, mono);
       return;
     }
     if (!beforeRef.current) beforeRef.current = document.createElement('canvas');
@@ -296,7 +310,7 @@ export function Editor() {
     const bctx = before.getContext('2d');
     if (!bctx) return;
     paintGrade(bctx, img, size.w, size.h, NEUTRAL_GRADE, viewFrame, mono);
-    paintGrade(ctx, img, size.w, size.h, photo.grade, viewFrame, mono);
+    paintGrade(ctx, graded, size.w, size.h, photo.grade, viewFrame, mono);
     const cut = Math.round(size.w * splitXRef.current);
     ctx.save();
     ctx.beginPath();
@@ -357,6 +371,22 @@ export function Editor() {
     });
   }
 
+  function setSkin(value: number) {
+    const nextValue = Math.max(0, Math.min(100, Math.round(value)));
+    const ids = targetIds();
+    patch((cur) => {
+      let changed = false;
+      const next = { ...cur };
+      for (const id of ids) {
+        const photo = next[id];
+        if (!photo || photo.skin === nextValue) continue;
+        changed = true;
+        next[id] = { ...photo, skin: nextValue };
+      }
+      return changed ? next : cur;
+    });
+  }
+
   function resetKeys(keys: readonly (keyof Grade)[]) {
     const ids = targetIds();
     patch((cur) => {
@@ -378,7 +408,7 @@ export function Editor() {
       const next = { ...cur };
       for (const id of ids) {
         if (!next[id]) continue;
-        next[id] = { ...next[id], grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false };
+        next[id] = { ...next[id], grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false, skin: 0 };
       }
       return next;
     });
@@ -492,8 +522,17 @@ export function Editor() {
         if (!photo || !src) continue;
         setProgress({ done: i, total: ids.length });
         const img = await loadImage(src);
+        let source: CanvasImageSource = img;
+        if (photo.skin > 0) {
+          try {
+            await prepareSkin(src, img);
+            source = blendedCanvas(src, photo.skin) ?? img;
+          } catch {
+            source = img;
+          }
+        }
         const blob = await exportJpeg(
-          img,
+          source,
           img.naturalWidth,
           img.naturalHeight,
           photo.grade,
@@ -617,7 +656,10 @@ export function Editor() {
     const pid = `u:${id}`;
     setUploads((prev) => {
       const item = prev.find((entry) => entry.id === id);
-      if (item) URL.revokeObjectURL(item.url);
+      if (item) {
+        releaseSkin(item.url);
+        URL.revokeObjectURL(item.url);
+      }
       return prev.filter((entry) => entry.id !== id);
     });
     patch((cur) => {
@@ -845,6 +887,25 @@ export function Editor() {
     setView({ x: 0, y: 0 });
   }, [activeId]);
 
+  const skinOn = activePhoto.skin > 0;
+  useEffect(() => {
+    if (!skinOn || !frameShot || frameShot.src !== activeSrc) {
+      setSkinNote('off');
+      return;
+    }
+    let cancel = false;
+    const known = peekSkin(activeSrc);
+    setSkinNote(known === 'ready' ? 'ready' : known === 'empty' ? 'empty' : 'loading');
+    prepareSkin(activeSrc, frameShot.img).then((entry) => {
+      if (cancel) return;
+      setSkinNote(entry.phase === 'empty' ? 'empty' : 'ready');
+      schedule();
+    }).catch(() => {
+      if (!cancel) setSkinNote('error');
+    });
+    return () => { cancel = true; };
+  }, [skinOn, activeSrc, frameShot, schedule]);
+
   useEffect(() => {
     const scroller = filmRef.current;
     const el = scroller?.querySelector<HTMLElement>('[data-active="true"]');
@@ -964,14 +1025,33 @@ export function Editor() {
     looks: lookId !== 'original',
     light: gradeDirty(grade, LIGHT_KEYS),
     colour: gradeDirty(grade, COLOUR_KEYS),
-    effects: gradeDirty(grade, EFFECT_KEYS),
+    retouch: activePhoto.skin > 0,
+    effects: gradeDirty(grade, EFFECT_KEYS) || (mobile && activePhoto.skin > 0),
     export: presetId !== 'full' || pan.x !== 0.5 || pan.y !== 0.5,
   };
 
   function shown(id: SecId): boolean {
+    if (mobile && id === 'retouch') return false;
     if (mobile && sheet === id) return true;
     if (mobile) return false;
     return open[id];
+  }
+
+  const skinHint = skinNote === 'loading'
+    ? 'Loading the skin model…'
+    : skinNote === 'empty'
+      ? 'No face detected'
+      : skinNote === 'error'
+        ? 'The skin model didn’t load.'
+        : '';
+
+  function skinFields() {
+    return (
+      <div data-skin={skinNote}>
+        <GradeSlider spec={SKIN_SPEC} value={activePhoto.skin} neutral={0} onChange={setSkin} />
+        {skinHint ? <p className="dk-hint" role="status">{skinHint}</p> : null}
+      </div>
+    );
   }
 
   return (
@@ -1189,7 +1269,11 @@ export function Editor() {
             <GradeSlider key={key} spec={SPEC[key]} value={grade[key]} onChange={(value) => setKey(key, value)} />
           ))}
         </Section>
-        <Section id="effects" title="Effects" shown={shown('effects')} modified={dirty.effects} onToggle={() => toggleSection('effects')} onReset={() => resetKeys(EFFECT_KEYS)}>
+        <Section id="retouch" title="Retouch" shown={shown('retouch')} modified={dirty.retouch} onToggle={() => toggleSection('retouch')} onReset={() => setSkin(0)}>
+          {skinFields()}
+        </Section>
+        <Section id="effects" title="Effects" shown={shown('effects')} modified={dirty.effects} onToggle={() => toggleSection('effects')} onReset={() => { resetKeys(EFFECT_KEYS); if (mobile) setSkin(0); }}>
+          {mobile ? skinFields() : null}
           {EFFECT_KEYS.map((key) => (
             <GradeSlider key={key} spec={SPEC[key]} value={grade[key]} onChange={(value) => setKey(key, value)} />
           ))}

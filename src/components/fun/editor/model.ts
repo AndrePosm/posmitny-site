@@ -1,8 +1,8 @@
 import { NEUTRAL_GRADE, type Grade } from '@/content/fun';
 
-export type PhotoState = { grade: Grade; rotation: number; flip: boolean };
+export type PhotoState = { grade: Grade; rotation: number; flip: boolean; skin: number };
 
-export type SecId = 'looks' | 'light' | 'colour' | 'effects' | 'export';
+export type SecId = 'looks' | 'light' | 'colour' | 'retouch' | 'effects' | 'export';
 
 export const LIGHT_KEYS = ['exposure', 'contrast', 'highlights', 'shadows'] as const;
 export const COLOUR_KEYS = ['warmth', 'saturation'] as const;
@@ -12,6 +12,7 @@ export const DEFAULT_OPEN: Record<SecId, boolean> = {
   looks: true,
   light: true,
   colour: true,
+  retouch: true,
   effects: false,
   export: true,
 };
@@ -19,7 +20,7 @@ export const DEFAULT_OPEN: Record<SecId, boolean> = {
 export const OPEN_KEY = 'darkroom-sections';
 
 export function blankPhoto(): PhotoState {
-  return { grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false };
+  return { grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false, skin: 0 };
 }
 
 export function sameGrade(a: Grade, b: Grade): boolean {
