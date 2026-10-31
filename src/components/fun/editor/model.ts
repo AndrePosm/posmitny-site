@@ -1,6 +1,9 @@
 import { NEUTRAL_GRADE, type Grade } from '@/content/fun';
+import { blankCrop, type PhotoCrop } from '../crop';
 
-export type PhotoState = { grade: Grade; rotation: number; flip: boolean; skin: number };
+export type { PhotoCrop };
+
+export type PhotoState = { grade: Grade; rotation: number; flip: boolean; skin: number; crop: PhotoCrop };
 
 export type SecId = 'looks' | 'light' | 'colour' | 'retouch' | 'effects' | 'export';
 
@@ -20,7 +23,7 @@ export const DEFAULT_OPEN: Record<SecId, boolean> = {
 export const OPEN_KEY = 'darkroom-sections';
 
 export function blankPhoto(): PhotoState {
-  return { grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false, skin: 0 };
+  return { grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false, skin: 0, crop: blankCrop() };
 }
 
 export function sameGrade(a: Grade, b: Grade): boolean {

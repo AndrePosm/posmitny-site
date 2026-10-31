@@ -1,5 +1,6 @@
 import type { Grade } from '@/content/fun';
 import { renderJpeg } from './render';
+import type { PhotoCrop } from './crop';
 import type { Frame } from './paint';
 import type { ExportPreset } from './presets';
 
@@ -12,6 +13,7 @@ type Job = {
   frame: Frame;
   bw: boolean;
   preset: ExportPreset;
+  crop: PhotoCrop;
   panX: number;
   panY: number;
 };
@@ -34,6 +36,7 @@ scope.onmessage = async (event) => {
       job.frame,
       job.bw,
       job.preset,
+      job.crop,
       job.panX,
       job.panY,
     );
