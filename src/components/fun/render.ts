@@ -1,8 +1,8 @@
 import type { Grade } from '@/content/fun';
 import { ctx2d, makeCanvas, type AnyCanvas } from './canvas';
-import { cropRect } from './crop';
+import { cropRect, type PhotoCrop } from './crop';
 import { stripJpegMetadata } from './jpeg';
-import { exportSize, paintGrade, type Frame } from './paint';
+import { exportSize, isFullCrop, paintCropped, paintGrade, type Frame } from './paint';
 import type { ExportPreset } from './presets';
 
 const JPEG_QUALITY = 0.9;
@@ -97,12 +97,18 @@ export async function renderJpeg(
   frame: Frame,
   bw: boolean,
   preset: ExportPreset,
+  crop: PhotoCrop,
   panX: number,
   panY: number,
 ): Promise<Blob> {
   const painted = exportSize(srcW, srcH, frame.rotation, 2560);
-  const base = makeCanvas(painted.w, painted.h);
-  paintGrade(ctx2d(base), img, painted.w, painted.h, grade, frame, bw);
+  const span = Math.max(0.02, Math.min(1, crop.w));
+  const rise = Math.max(0.02, Math.min(1, crop.h));
+  const framedW = isFullCrop(crop) ? painted.w : Math.max(1, Math.round(painted.w * span));
+  const framedH = isFullCrop(crop) ? painted.h : Math.max(1, Math.round(painted.h * rise));
+  const base = makeCanvas(framedW, framedH);
+  if (isFullCrop(crop)) paintGrade(ctx2d(base), img, framedW, framedH, grade, frame, bw);
+  else paintCropped(ctx2d(base), img, framedW, framedH, grade, frame, crop, bw);
 
   const aspect = preset.aspect;
   const targetW = preset.width;
@@ -111,15 +117,15 @@ export async function renderJpeg(
   let scaled = false;
 
   if (aspect != null && targetW != null && targetH != null) {
-    const crop = cropRect(painted.w, painted.h, aspect, panX, panY);
-    const scale = Math.min(targetW / crop.w, targetH / crop.h);
-    out = drawScaled(base, crop.x, crop.y, crop.w, crop.h, targetW, targetH);
+    const window = cropRect(base.width, base.height, aspect, panX, panY);
+    const scale = Math.min(targetW / window.w, targetH / window.h);
+    out = drawScaled(base, window.x, window.y, window.w, window.h, targetW, targetH);
     scaled = scale < 0.98;
-  } else if (Math.max(painted.w, painted.h) > preset.longEdge + 1) {
-    const fit = exportSize(painted.w, painted.h, 0, preset.longEdge);
-    out = drawScaled(base, 0, 0, painted.w, painted.h, fit.w, fit.h);
+  } else if (Math.max(base.width, base.height) > preset.longEdge + 1) {
+    const fit = exportSize(base.width, base.height, 0, preset.longEdge);
+    out = drawScaled(base, 0, 0, base.width, base.height, fit.w, fit.h);
     scaled = true;
-  } else if (Math.max(srcW, srcH) > Math.max(painted.w, painted.h) + 1) {
+  } else if (Math.max(srcW, srcH) > Math.max(base.width, base.height) + 1) {
     scaled = true;
   }
 

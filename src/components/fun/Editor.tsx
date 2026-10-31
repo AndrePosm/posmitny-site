@@ -4,12 +4,11 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ADJUSTMENTS, LOOKS, NEUTRAL_GRADE, matchLook, type Grade } from '@/content/fun';
-import { PHOTOS, PHOTO_ORDER, type PhotoKey } from '@/content/me';
-import { cropFractions } from './crop';
+import { aspectRatio, blankCrop, clampAngle, cropFractions, fitRatio, formatAngle, type CropAspectId, type PhotoCrop } from './crop';
 import { exportJpeg } from './exportClient';
-import { MAX_FILE, MAX_ROLL, isImage, loadImage, saveBlob, shortName, slug, stem } from './files';
+import { MAX_FILE, MAX_ROLL, isImage, loadImage, saveBlob, slug, stem } from './files';
 import { matchToReference } from './match';
-import { paintGrade, previewPixels, type Frame } from './paint';
+import { paintCropped, previewPixels, type Frame } from './paint';
 import { EXPORTS, exportById, type ExportId } from './presets';
 import { zipStore } from './zip';
 import { GradeSlider } from './editor/Slider';
@@ -27,9 +26,18 @@ import {
   type PhotoState,
   type SecId,
 } from './editor/model';
+import { CropBox } from './editor/CropBox';
 import { thumbKey, useLookThumbs } from './editor/useThumbs';
 
-const START: PhotoKey = 'volcano';
+/** One sample so a shared link does not open André’s whole roll. */
+const EXAMPLE_ID = 's:example';
+const EXAMPLE = {
+  src: '/img/me-volcano.webp',
+  alt: 'A volcanic ridge glowing orange in evening light',
+  w: 1024,
+  h: 768,
+};
+
 const SPEC = Object.fromEntries(ADJUSTMENTS.map((item) => [item.key, item])) as Record<keyof Grade, (typeof ADJUSTMENTS)[number]>;
 const TABS: SecId[] = ['looks', 'light', 'colour', 'effects', 'export'];
 const TAB_LABEL: Record<SecId, string> = {
@@ -42,6 +50,7 @@ const TAB_LABEL: Record<SecId, string> = {
 
 const SHORTCUTS: [string, string][] = [
   ['E', 'Export'],
+  ['C', 'Crop'],
   ['R', 'Reset'],
   ['B', 'Black and white'],
   ['←  →', 'Previous or next photo'],
@@ -55,20 +64,12 @@ const SHORTCUTS: [string, string][] = [
 
 let uploadSeq = 0;
 
-function siteId(key: PhotoKey): string {
-  return `s:${key}`;
-}
-
 function initialPhotos(): Record<string, PhotoState> {
-  const map: Record<string, PhotoState> = {};
-  for (const key of PHOTO_ORDER) map[siteId(key)] = blankPhoto();
-  return map;
+  return { [EXAMPLE_ID]: blankPhoto() };
 }
 
-function photoKey(id: string): PhotoKey | null {
-  if (!id.startsWith('s:')) return null;
-  const key = id.slice(2) as PhotoKey;
-  return key in PHOTOS ? key : null;
+function isExample(id: string): boolean {
+  return id === EXAMPLE_ID;
 }
 
 type Toast = { text: string; tone: 'ok' | 'err' };
@@ -141,8 +142,11 @@ function Section({
 export function Editor() {
   const [photos, setPhotos] = useState<Record<string, PhotoState>>(initialPhotos);
   const [uploads, setUploads] = useState<{ id: string; url: string; name: string }[]>([]);
-  const [activeId, setActiveId] = useState(siteId(START));
-  const [selection, setSelection] = useState<string[]>(() => PHOTO_ORDER.map(siteId));
+  const [exampleOn, setExampleOn] = useState(true);
+  const [cropMode, setCropMode] = useState(false);
+  const [draft, setDraft] = useState<PhotoCrop>(blankCrop);
+  const [activeId, setActiveId] = useState(EXAMPLE_ID);
+  const [selection, setSelection] = useState<string[]>([EXAMPLE_ID]);
   const [bw, setBw] = useState(false);
   const [split, setSplit] = useState(false);
   const [splitX, setSplitX] = useState(0.5);
@@ -173,6 +177,9 @@ export function Editor() {
   const selectionRef = useRef(selection);
   const activeRef = useRef(activeId);
   const uploadsRef = useRef(uploads);
+  const exampleRef = useRef(exampleOn);
+  const cropModeRef = useRef(false);
+  const draftRef = useRef(draft);
   const bwRef = useRef(bw);
   const splitRef = useRef(split);
   const splitXRef = useRef(splitX);
@@ -191,6 +198,7 @@ export function Editor() {
   const menuRef = useRef<HTMLDivElement>(null);
   const helpCloseRef = useRef<HTMLButtonElement>(null);
   const refInput = useRef<HTMLInputElement>(null);
+  const rollInput = useRef<HTMLInputElement>(null);
   const anchor = useRef(activeId);
   const clip = useRef<Grade | null>(null);
   const raf = useRef(0);
@@ -207,6 +215,9 @@ export function Editor() {
   activeRef.current = activeId;
   selectionRef.current = selection;
   uploadsRef.current = uploads;
+  exampleRef.current = exampleOn;
+  cropModeRef.current = cropMode;
+  draftRef.current = draft;
   bwRef.current = bw;
   splitRef.current = split;
   splitXRef.current = splitX;
@@ -216,7 +227,7 @@ export function Editor() {
   panRef.current = pan;
   presetRef.current = presetId;
 
-  const orderedIds = PHOTO_ORDER.map(siteId).concat(uploads.map((item) => `u:${item.id}`));
+  const orderedIds = (exampleOn ? [EXAMPLE_ID] : []).concat(uploads.map((item) => `u:${item.id}`));
   orderRef.current = orderedIds;
   const activePhoto = photos[activeId] ?? blankPhoto();
   const grade = activePhoto.grade;
@@ -227,28 +238,16 @@ export function Editor() {
   const lookMeta = LOOKS.find((look) => look.id === lookId);
   const lookStatus = lookId !== 'custom' ? (lookMeta?.label ?? 'Original') : refActive ? 'Ref' : 'Tweaked';
   const synced = orderedIds.filter((id) => photos[id] && sameGrade(photos[id].grade, grade)).length;
-  const exportIds = selection.length ? orderedIds.filter((id) => selection.includes(id)) : [activeId];
+  const exportIds = selection.length ? orderedIds.filter((id) => selection.includes(id)) : (activeId ? [activeId] : []);
   const locked = busy !== '';
-  const activeSrc = (() => {
-    const key = photoKey(activeId);
-    if (key) return PHOTOS[key].src;
-    return uploads.find((item) => `u:${item.id}` === activeId)?.url ?? '';
-  })();
-  const activeName = (() => {
-    const key = photoKey(activeId);
-    if (key) return shortName(PHOTOS[key].cap);
-    return uploads.find((item) => `u:${item.id}` === activeId)?.name ?? 'Your photo';
-  })();
-  const activeAlt = (() => {
-    const key = photoKey(activeId);
-    return key ? PHOTOS[key].alt : 'Your photo';
-  })();
-  const aspect = (() => {
-    const key = photoKey(activeId);
-    return key ? { w: PHOTOS[key].w, h: PHOTOS[key].h } : { w: 4, h: 3 };
-  })();
+  const activeUpload = uploads.find((item) => `u:${item.id}` === activeId);
+  const showingExample = exampleOn && activeId === EXAMPLE_ID;
+  const activeSrc = showingExample ? EXAMPLE.src : (activeUpload?.url ?? '');
+  const activeName = showingExample ? 'Example' : (activeUpload?.name ?? (orderedIds.length ? 'Photo' : 'Add photos'));
+  const activeAlt = showingExample ? EXAMPLE.alt : 'Your photo';
+  const aspect = showingExample ? { w: EXAMPLE.w, h: EXAMPLE.h } : { w: 4, h: 3 };
 
-  const thumbs = useLookThumbs(frameShot?.img ?? null, frameShot?.src ?? '', frame, bw, refGrade);
+  const thumbs = useLookThumbs(frameShot?.img ?? null, frameShot?.src ?? '', frame, bw, refGrade, activePhoto.crop ?? blankCrop());
 
   const paint = useCallback(() => {
     const img = imgRef.current;
@@ -260,17 +259,22 @@ export function Editor() {
     if (rect.width < 2 || rect.height < 2) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const rotation = photo.rotation;
+    const swapped = ((rotation % 360) + 360) % 360 % 180 !== 0;
+    const ow = swapped ? img.naturalHeight : img.naturalWidth;
+    const oh = swapped ? img.naturalWidth : img.naturalHeight;
+    const editing = cropModeRef.current;
+    const live = editing ? draftRef.current : (photo.crop ?? blankCrop());
+    const view = editing ? { ...live, x: 0, y: 0, w: 1, h: 1 } : live;
+    const srcW = Math.max(1, ow * view.w);
+    const srcH = Math.max(1, oh * view.h);
     let size: { w: number; h: number; cssW: number; cssH: number };
-    if (zoomRef.current === '100') {
-      const swapped = ((rotation % 360) + 360) % 360 % 180 !== 0;
-      const ow = swapped ? img.naturalHeight : img.naturalWidth;
-      const oh = swapped ? img.naturalWidth : img.naturalHeight;
-      const scale = Math.min(1, 4096 / Math.max(ow, oh));
-      const w = Math.max(1, Math.round(ow * scale));
-      const h = Math.max(1, Math.round(oh * scale));
+    if (!editing && zoomRef.current === '100') {
+      const scale = Math.min(1, 4096 / Math.max(srcW, srcH));
+      const w = Math.max(1, Math.round(srcW * scale));
+      const h = Math.max(1, Math.round(srcH * scale));
       size = { w, h, cssW: w / dpr, cssH: h / dpr };
     } else {
-      size = previewPixels(img.naturalWidth, img.naturalHeight, rotation, rect.width, rect.height, dpr);
+      size = previewPixels(srcW, srcH, 0, rect.width, rect.height, dpr);
     }
     if (canvas.width !== size.w || canvas.height !== size.h) {
       canvas.width = size.w;
@@ -283,8 +287,11 @@ export function Editor() {
     const viewFrame = { rotation, flip: photo.flip };
     const mono = bwRef.current;
     const showOriginal = comparingRef.current;
-    if (showOriginal || !splitRef.current) {
-      paintGrade(ctx, img, size.w, size.h, showOriginal ? NEUTRAL_GRADE : photo.grade, viewFrame, mono);
+    const draw = (target: CanvasRenderingContext2D, grade: Grade, black: boolean) => {
+      paintCropped(target, img, size.w, size.h, grade, viewFrame, view, black);
+    };
+    if (showOriginal || !splitRef.current || editing) {
+      draw(ctx, showOriginal ? NEUTRAL_GRADE : photo.grade, mono);
       return;
     }
     if (!beforeRef.current) beforeRef.current = document.createElement('canvas');
@@ -295,8 +302,8 @@ export function Editor() {
     }
     const bctx = before.getContext('2d');
     if (!bctx) return;
-    paintGrade(bctx, img, size.w, size.h, NEUTRAL_GRADE, viewFrame, mono);
-    paintGrade(ctx, img, size.w, size.h, photo.grade, viewFrame, mono);
+    draw(bctx, NEUTRAL_GRADE, mono);
+    draw(ctx, photo.grade, mono);
     const cut = Math.round(size.w * splitXRef.current);
     ctx.save();
     ctx.beginPath();
@@ -378,7 +385,7 @@ export function Editor() {
       const next = { ...cur };
       for (const id of ids) {
         if (!next[id]) continue;
-        next[id] = { ...next[id], grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false };
+        next[id] = { ...next[id], grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false, crop: blankCrop() };
       }
       return next;
     });
@@ -392,6 +399,66 @@ export function Editor() {
     zoomRef.current = 'fit';
     setZoom('fit');
     setView({ x: 0, y: 0 });
+    if (cropModeRef.current) {
+      cropModeRef.current = false;
+      setCropMode(false);
+      const cleared = blankCrop();
+      draftRef.current = cleared;
+      setDraft(cleared);
+    }
+  }
+
+  function updateDraft(next: PhotoCrop) {
+    draftRef.current = next;
+    setDraft(next);
+    schedule();
+  }
+
+  function enterCrop() {
+    const photo = photosRef.current[activeRef.current];
+    if (!photo || !imgRef.current) return;
+    const next = { ...(photo.crop ?? blankCrop()) };
+    draftRef.current = next;
+    setDraft(next);
+    cropModeRef.current = true;
+    setCropMode(true);
+    splitRef.current = false;
+    setSplit(false);
+    zoomRef.current = 'fit';
+    setZoom('fit');
+    setView({ x: 0, y: 0 });
+    schedule();
+  }
+
+  function commitCrop() {
+    if (!cropModeRef.current) return;
+    const id = activeRef.current;
+    const next = { ...draftRef.current };
+    cropModeRef.current = false;
+    setCropMode(false);
+    if (id) {
+      patch((cur) => {
+        const photo = cur[id];
+        if (!photo) return cur;
+        return { ...cur, [id]: { ...photo, crop: next } };
+      });
+    } else schedule();
+  }
+
+  function cancelCrop() {
+    if (!cropModeRef.current) return;
+    cropModeRef.current = false;
+    setCropMode(false);
+    schedule();
+  }
+
+  function resetCropDraft() {
+    updateDraft(blankCrop());
+  }
+
+  function toggleCrop() {
+    if (cropModeRef.current) commitCrop();
+    else enterCrop();
   }
 
   function rotate(delta: number) {
@@ -454,6 +521,7 @@ export function Editor() {
   }
 
   function step(dir: number) {
+    if (cropModeRef.current) commitCrop();
     const ids = orderRef.current;
     if (!ids.length) return;
     const index = ids.indexOf(activeRef.current);
@@ -461,16 +529,29 @@ export function Editor() {
   }
 
   function srcOf(id: string): string | undefined {
-    const key = photoKey(id);
-    if (key) return PHOTOS[key].src;
+    if (isExample(id)) return exampleRef.current ? EXAMPLE.src : undefined;
     return uploadsRef.current.find((item) => `u:${item.id}` === id)?.url;
   }
 
   function baseOf(id: string): string {
-    const key = photoKey(id);
-    if (key) return key;
+    if (isExample(id)) return 'example';
     const item = uploadsRef.current.find((entry) => `u:${entry.id}` === id);
     return slug(item?.name ?? 'photo');
+  }
+
+  function hideExample() {
+    if (!exampleRef.current) return;
+    exampleRef.current = false;
+    setExampleOn(false);
+  }
+
+  function dismissExample() {
+    hideExample();
+    setSelection((prev) => prev.filter((id) => !isExample(id)));
+    if (activeRef.current === EXAMPLE_ID) {
+      const first = uploadsRef.current[0];
+      setActiveId(first ? `u:${first.id}` : '');
+    }
   }
 
   async function runExport(ids: string[], asBw: boolean) {
@@ -500,6 +581,7 @@ export function Editor() {
           { rotation: photo.rotation, flip: photo.flip },
           asBw,
           presetNow,
+          photo.crop ?? blankCrop(),
           panNow.x,
           panNow.y,
         );
@@ -559,6 +641,7 @@ export function Editor() {
   }
 
   function onThumb(id: string, event: MouseEvent) {
+    if (cropModeRef.current && id !== activeRef.current) commitCrop();
     const ids = orderRef.current;
     if (event.shiftKey) {
       const from = Math.max(0, ids.indexOf(anchor.current));
@@ -609,12 +692,14 @@ export function Editor() {
     setUploads((prev) => [...prev, ...added]);
     const ids = added.map((item) => `u:${item.id}`);
     setActiveId(ids[0]);
-    setSelection((prev) => (firstUpload ? ids : Array.from(new Set([...prev, ...ids]))));
+    setSelection((prev) => (firstUpload ? ids : Array.from(new Set([...prev.filter((id) => !isExample(id)), ...ids]))));
     anchor.current = ids[0];
+    hideExample();
   }
 
   function removeUpload(id: string) {
     const pid = `u:${id}`;
+    const remaining = uploadsRef.current.filter((entry) => entry.id !== id);
     setUploads((prev) => {
       const item = prev.find((entry) => entry.id === id);
       if (item) URL.revokeObjectURL(item.url);
@@ -628,11 +713,13 @@ export function Editor() {
     });
     setSelection((prev) => {
       const next = prev.filter((entry) => entry !== pid);
-      const left = uploadsRef.current.some((entry) => entry.id !== id);
-      if (!left) return PHOTO_ORDER.map(siteId);
-      return next;
+      if (remaining.length) return next;
+      return exampleRef.current ? [EXAMPLE_ID] : [];
     });
-    if (activeRef.current === pid) setActiveId(siteId(START));
+    if (activeRef.current === pid) {
+      if (remaining.length) setActiveId(`u:${remaining[0].id}`);
+      else setActiveId(exampleRef.current ? EXAMPLE_ID : '');
+    }
   }
 
   async function onReference(file: File | undefined) {
@@ -695,7 +782,13 @@ export function Editor() {
   const natural = imgRef.current;
   const orientedW = natural && frame.rotation % 180 !== 0 ? natural.naturalHeight : (natural?.naturalWidth ?? 1);
   const orientedH = natural && frame.rotation % 180 !== 0 ? natural.naturalWidth : (natural?.naturalHeight ?? 1);
-  const crop = preset.aspect != null && ready ? cropFractions(orientedW, orientedH, preset.aspect, pan.x, pan.y) : null;
+  const liveCrop = cropMode ? draft : (activePhoto.crop ?? blankCrop());
+  const framedW = orientedW * (cropMode ? 1 : liveCrop.w);
+  const framedH = orientedH * (cropMode ? 1 : liveCrop.h);
+  const presetWindow = !cropMode && preset.aspect != null && ready
+    ? cropFractions(framedW, framedH, preset.aspect, pan.x, pan.y)
+    : null;
+  const cropRatio = aspectRatio(draft.aspect, orientedW, orientedH);
   const stageLabel = comparing
     ? `${activeAlt}. Original, without the grade.${bw ? ' Black and white.' : ''}`
     : `${activeAlt}. ${lookStatus}.${bw ? ' Black and white.' : ''}`;
@@ -712,8 +805,13 @@ export function Editor() {
     paste: () => {},
     help: () => {},
     escape: () => {},
+    toggleCrop: () => {},
+    commitCrop: () => {},
+    cancelCrop: () => {},
+    resetCrop: () => {},
     helpOpen: false,
     menuOpen: false,
+    cropOpen: false,
   });
   api.current = {
     exportSel: () => { void runExport(exportIds, false); },
@@ -726,18 +824,25 @@ export function Editor() {
     help: () => setHelp((value) => !value),
     escape: () => {
       if (help) setHelp(false);
+      else if (cropMode) cancelCrop();
       else if (menu) setMenu(null);
       else if (sheet) setSheet(null);
     },
+    toggleCrop,
+    commitCrop,
+    cancelCrop,
+    resetCrop: resetCropDraft,
     helpOpen: help,
     menuOpen: menu !== null,
+    cropOpen: cropMode,
   };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
-      if (target?.closest('[role="slider"], .dk-crop, .dk-split')) {
+      const straight = !!target?.closest('.dk-straight');
+      if (target?.closest('input, textarea, [contenteditable="true"]') && !straight) return;
+      if (!straight && target?.closest('[role="slider"], .dk-crop, .dk-user-crop, .dk-cropbox, .dk-split')) {
         if (event.key !== 'Escape' && event.key !== '?' && !(event.key === '/' && event.shiftKey)) return;
       }
       const ui = api.current;
@@ -766,12 +871,25 @@ export function Editor() {
         return;
       }
       if (meta || event.altKey) return;
+      if (ui.cropOpen) {
+        if (event.key === 'Enter' || event.key === 'c' || event.key === 'C') {
+          event.preventDefault();
+          ui.commitCrop();
+        } else if (event.key === 'r' || event.key === 'R') {
+          event.preventDefault();
+          ui.resetCrop();
+        }
+        return;
+      }
       if (event.key === 'e' || event.key === 'E') {
         event.preventDefault();
         ui.exportSel();
       } else if (event.key === 'r' || event.key === 'R') {
         event.preventDefault();
         ui.reset();
+      } else if (event.key === 'c' || event.key === 'C') {
+        event.preventDefault();
+        ui.toggleCrop();
       } else if (event.key === 'b' || event.key === 'B') {
         event.preventDefault();
         ui.toggleBw();
@@ -819,7 +937,12 @@ export function Editor() {
   }, [schedule]);
 
   useEffect(() => {
-    if (!activeSrc) return;
+    if (!activeSrc) {
+      imgRef.current = null;
+      setFrameShot(null);
+      setReady(false);
+      return;
+    }
     let cancel = false;
     setReady(false);
     const img = new Image();
@@ -853,7 +976,7 @@ export function Editor() {
     const sr = scroller.getBoundingClientRect();
     if (er.left < sr.left) scroller.scrollLeft -= sr.left - er.left + 8;
     else if (er.right > sr.right) scroller.scrollLeft += er.right - sr.right + 8;
-  }, [activeId, uploads.length]);
+  }, [activeId, uploads.length, exampleOn]);
 
   useEffect(() => () => {
     for (const item of uploadsRef.current) URL.revokeObjectURL(item.url);
@@ -917,7 +1040,8 @@ export function Editor() {
   function onStageDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
-    if (target.closest('.dk-crop, .dk-split, .dk-float, button, a, input, label')) return;
+    if (cropModeRef.current) return;
+    if (target.closest('.dk-crop, .dk-cropbox, .dk-cropbar, .dk-split, .dk-float, button, a, input, label')) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     hold.current = { x: event.clientX, y: event.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
     gesture.current = 'none';
@@ -957,7 +1081,7 @@ export function Editor() {
 
   function lookSrc(id: string, sample: Grade): string {
     if (!frameShot) return '';
-    return thumbs[thumbKey(frameShot.src, id, frame, bw, sample)] ?? '';
+    return thumbs[thumbKey(frameShot.src, id, frame, bw, sample, activePhoto.crop ?? blankCrop())] ?? '';
   }
 
   const dirty: Record<SecId, boolean> = {
@@ -1029,7 +1153,7 @@ export function Editor() {
       </header>
 
       <div
-        className={drag ? 'dk-stage over' : 'dk-stage'}
+        className={`dk-stage${drag ? ' over' : ''}${cropMode ? ' is-crop' : ''}`}
         onDragEnter={(event) => {
           event.preventDefault();
           dragDepth.current += 1;
@@ -1065,13 +1189,23 @@ export function Editor() {
             style={zoom === '100' ? { transform: `translate(${view.x}px, ${view.y}px)` } : undefined}
           >
             <canvas ref={canvasRef} role="img" aria-label={stageLabel} style={{ visibility: ready ? 'visible' : 'hidden' }} />
-            {crop ? (
+            {showingExample && !cropMode ? <span className="dk-example">Example</span> : null}
+            {cropMode ? (
+              <CropBox
+                rect={draft}
+                frameW={orientedW}
+                frameH={orientedH}
+                ratio={cropRatio}
+                onChange={(rect) => updateDraft({ ...draftRef.current, ...rect })}
+              />
+            ) : null}
+            {presetWindow ? (
               <div
                 className="dk-crop"
                 role="application"
                 tabIndex={0}
                 aria-label="Crop frame. Drag to move it, or use the arrow keys."
-                style={{ left: `${crop.x}%`, top: `${crop.y}%`, width: `${crop.w}%`, height: `${crop.h}%` }}
+                style={{ left: `${presetWindow.x}%`, top: `${presetWindow.y}%`, width: `${presetWindow.w}%`, height: `${presetWindow.h}%` }}
                 onPointerDown={onCropDown}
                 onPointerMove={onCropMove}
                 onPointerUp={() => { cropDrag.current = null; }}
@@ -1124,15 +1258,77 @@ export function Editor() {
             ) : null}
           </div>
         </div>
-        {!ready ? <div className="dk-skel" style={{ aspectRatio: `${aspect.w} / ${aspect.h}` }} /> : null}
+        {activeSrc && !ready ? <div className="dk-skel" style={{ aspectRatio: `${aspect.w} / ${aspect.h}` }} /> : null}
+        {!orderedIds.length ? (
+          <button type="button" className="dk-empty" onClick={() => rollInput.current?.click()}>
+            <strong>+ Add photos</strong>
+            <span>or drop them here</span>
+          </button>
+        ) : null}
         {drag ? <div className="dk-drop">Drop the photos</div> : null}
-        <div className="dk-float" role="toolbar" aria-label="Frame">
-          <button type="button" aria-label="Rotate left" onClick={() => rotate(-90)}><IconRotate dir="left" /></button>
-          <button type="button" aria-label="Rotate right" onClick={() => rotate(90)}><IconRotate dir="right" /></button>
-          <button type="button" aria-label="Flip horizontally" aria-pressed={frame.flip} onClick={toggleFlip}><IconFlip /></button>
-          <button type="button" aria-pressed={zoom === 'fit'} onClick={() => setZoomMode('fit')}>Fit</button>
-          <button type="button" aria-pressed={zoom === '100'} onClick={() => setZoomMode('100')}>100%</button>
-        </div>
+        {cropMode ? (
+          <div className="dk-cropbar">
+            <div className="dk-aspects" role="group" aria-label="Crop aspect">
+              {(['free', 'original', '1:1', '4:5', '9:16', '16:9', '3:2'] as CropAspectId[]).map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={draft.aspect === id}
+                  onClick={() => {
+                    const ratio = aspectRatio(id, orientedW, orientedH);
+                    const cur = draftRef.current;
+                    const rect = ratio == null
+                      ? { x: cur.x, y: cur.y, w: cur.w, h: cur.h }
+                      : fitRatio(ratio, orientedW, orientedH, cur.x + cur.w / 2, cur.y + cur.h / 2);
+                    updateDraft({ ...cur, ...rect, aspect: id });
+                  }}
+                >
+                  {id === 'free' ? 'Free' : id === 'original' ? 'Original' : id}
+                </button>
+              ))}
+            </div>
+            <label className="dk-straight">
+              <span>Straighten</span>
+              <input
+                type="range"
+                min={-45}
+                max={45}
+                step={0.1}
+                value={draft.angle}
+                aria-label="Straighten"
+                aria-valuetext={formatAngle(draft.angle)}
+                onChange={(event) => updateDraft({ ...draftRef.current, angle: clampAngle(Number(event.target.value)) })}
+                onDoubleClick={() => updateDraft({ ...draftRef.current, angle: 0 })}
+                onKeyDown={(event) => {
+                  const jump = event.shiftKey ? 1 : 0.1;
+                  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const dir = event.key === 'ArrowLeft' ? -1 : 1;
+                    updateDraft({ ...draftRef.current, angle: clampAngle(draftRef.current.angle + dir * jump) });
+                  }
+                }}
+              />
+              <button type="button" className="dk-straight-val" onDoubleClick={() => updateDraft({ ...draftRef.current, angle: 0 })} aria-label="Reset straighten">
+                {formatAngle(draft.angle)}
+              </button>
+            </label>
+            <div className="dk-crop-actions">
+              <button type="button" className="dk-ghost" onClick={cancelCrop}>Cancel</button>
+              <button type="button" className="dk-ghost" onClick={resetCropDraft}>Reset</button>
+              <button type="button" className="dk-pri" onClick={commitCrop}>Done</button>
+            </div>
+          </div>
+        ) : (
+          <div className="dk-float" role="toolbar" aria-label="Frame">
+            <button type="button" aria-label="Rotate left" onClick={() => rotate(-90)}><IconRotate dir="left" /></button>
+            <button type="button" aria-label="Rotate right" onClick={() => rotate(90)}><IconRotate dir="right" /></button>
+            <button type="button" aria-label="Flip horizontally" aria-pressed={frame.flip} onClick={toggleFlip}><IconFlip /></button>
+            <button type="button" aria-pressed={cropMode} aria-keyshortcuts="C" disabled={!ready} onClick={toggleCrop}>Crop</button>
+            <button type="button" aria-pressed={zoom === 'fit'} onClick={() => setZoomMode('fit')}>Fit</button>
+            <button type="button" aria-pressed={zoom === '100'} onClick={() => setZoomMode('100')}>100%</button>
+          </div>
+        )}
       </div>
 
       <aside className={sheet ? 'dk-panel on' : 'dk-panel'} aria-label="Grade" aria-busy={busy === 'matching'}>
@@ -1212,7 +1408,7 @@ export function Editor() {
       </aside>
 
       <footer className="dk-film">
-        <p className="dk-count">{orderedIds.length === 1 ? '1 photo' : `${orderedIds.length} photos`} · {synced} synced</p>
+        <p className="dk-count">{orderedIds.length === 0 ? 'No photos' : orderedIds.length === 1 ? '1 photo' : `${orderedIds.length} photos`} · {synced} synced</p>
         <div
           className="dk-film-row"
           ref={filmRef}
@@ -1221,21 +1417,33 @@ export function Editor() {
           onWheel={(event) => {
             if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) event.currentTarget.scrollLeft += event.deltaY;
           }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            takeFiles(event.dataTransfer.files);
+          }}
         >
           {orderedIds.map((id) => {
-            const key = photoKey(id);
             const upload = uploads.find((item) => `u:${item.id}` === id);
-            const src = key ? PHOTOS[key].src : upload?.url;
-            const name = key ? shortName(PHOTOS[key].cap) : (upload?.name ?? 'Photo');
+            const sample = isExample(id);
+            const src = sample ? EXAMPLE.src : upload?.url;
+            const name = sample ? 'Example' : (upload?.name ?? 'Photo');
             const current = id === activeId;
             const selected = selection.includes(id);
             if (!src) return null;
             return (
               <div key={id} className={`dk-cell${selected ? ' on' : ''}${current ? ' now' : ''}`} data-active={current ? 'true' : undefined}>
                 <button type="button" className="dk-thumb" aria-current={current ? 'true' : undefined} aria-label={name} onClick={(event) => onThumb(id, event)}>
-                  <img src={src} alt="" width={key ? PHOTOS[key].w : undefined} height={key ? PHOTOS[key].h : undefined} draggable={false} />
+                  <img src={src} alt="" width={sample ? EXAMPLE.w : undefined} height={sample ? EXAMPLE.h : undefined} draggable={false} />
                 </button>
+                {sample ? <span className="dk-ex">Example</span> : null}
                 <button type="button" className="dk-tick" aria-pressed={selected} aria-label={`Select ${name}`} onClick={() => toggleSelected(id)}><i /></button>
+                {sample ? (
+                  <button type="button" className="dk-x" aria-label="Remove example" onClick={dismissExample}>×</button>
+                ) : null}
                 {upload ? (
                   <button type="button" className="dk-x" aria-label={`Remove ${name}`} onClick={() => removeUpload(upload.id)}>×</button>
                 ) : null}
@@ -1244,17 +1452,18 @@ export function Editor() {
           })}
           <label className="dk-add">
             <input
+              ref={rollInput}
               className="dk-file"
               type="file"
               accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
               multiple
-              aria-label={uploads.length ? 'Add photos' : 'Add your photos'}
+              aria-label="Add photos"
               onChange={(event) => {
                 takeFiles(event.target.files ?? undefined);
                 event.target.value = '';
               }}
             />
-            <span>+ Add</span>
+            <span>+ Add photos</span>
           </label>
         </div>
       </footer>

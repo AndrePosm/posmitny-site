@@ -1,5 +1,6 @@
 import type { Grade } from '@/content/fun';
 import { makeCanvas, type AnyCanvas } from './canvas';
+import { coverScale, type PhotoCrop } from './crop';
 
 export type Frame = { rotation: number; flip: boolean };
 
@@ -16,6 +17,7 @@ const HIGHLIGHT_PULL = 0.22;
 
 let grainCanvas: AnyCanvas | null = null;
 let scratch: AnyCanvas | null = null;
+let framed: AnyCanvas | null = null;
 
 function grainTile(): AnyCanvas | null {
   if (grainCanvas) return grainCanvas;
@@ -36,6 +38,15 @@ function grainTile(): AnyCanvas | null {
   ctx.putImageData(data, 0, 0);
   grainCanvas = c;
   return c;
+}
+
+function framedCanvas(w: number, h: number): AnyCanvas | null {
+  try {
+    if (!framed || framed.width !== w || framed.height !== h) framed = makeCanvas(w, h);
+  } catch {
+    return null;
+  }
+  return framed;
 }
 
 function scratchCanvas(w: number, h: number): AnyCanvas | null {
@@ -227,4 +238,75 @@ export function paintGrade(
       ctx.restore();
     }
   }
+}
+
+export function isFullCrop(crop: PhotoCrop): boolean {
+  return Math.abs(crop.angle) < 0.05
+    && crop.x <= 0.0001
+    && crop.y <= 0.0001
+    && crop.w >= 0.9999
+    && crop.h >= 0.9999;
+}
+
+/**
+ * Paint the graded frame, rotate it by the straighten angle, zoom until the
+ * frame stays covered, then copy the crop window into `ctx`.
+ */
+export function paintCropped(
+  ctx: CanvasRenderingContext2D,
+  img: CanvasImageSource,
+  outW: number,
+  outH: number,
+  grade: Grade,
+  frame: Frame,
+  crop: PhotoCrop,
+  bw = false,
+): void {
+  if (isFullCrop(crop)) {
+    paintGrade(ctx, img, outW, outH, grade, frame, bw);
+    return;
+  }
+  const span = Math.max(0.02, Math.min(1, crop.w));
+  const rise = Math.max(0.02, Math.min(1, crop.h));
+  let fullW = Math.max(1, Math.round(outW / span));
+  let fullH = Math.max(1, Math.round(outH / rise));
+  const cap = 4096;
+  const limit = Math.min(1, cap / Math.max(fullW, fullH));
+  fullW = Math.max(1, Math.round(fullW * limit));
+  fullH = Math.max(1, Math.round(fullH * limit));
+  const buf = framedCanvas(fullW, fullH);
+  const bctx = buf?.getContext('2d') as CanvasRenderingContext2D | null;
+  if (!buf || !bctx) {
+    paintGrade(ctx, img, outW, outH, grade, frame, bw);
+    return;
+  }
+  paintGrade(bctx, img, fullW, fullH, grade, frame, bw);
+
+  const zoom = coverScale(crop.angle, fullW, fullH);
+  const rad = (crop.angle * Math.PI) / 180;
+  const cropX = Math.min(1, Math.max(0, crop.x)) * fullW;
+  const cropY = Math.min(1, Math.max(0, crop.y)) * fullH;
+  const cropW = Math.max(1, span * fullW);
+  const cropH = Math.max(1, rise * fullH);
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.filter = 'none';
+  ctx.clearRect(0, 0, outW, outH);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, outW, outH);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, outW, outH);
+  ctx.clip();
+  ctx.translate(outW / 2, outH / 2);
+  ctx.scale(outW / cropW, outH / cropH);
+  ctx.translate(fullW / 2 - (cropX + cropW / 2), fullH / 2 - (cropY + cropH / 2));
+  ctx.rotate(rad);
+  ctx.scale(zoom, zoom);
+  ctx.drawImage(buf, -fullW / 2, -fullH / 2, fullW, fullH);
+  ctx.restore();
 }

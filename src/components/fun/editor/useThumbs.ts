@@ -2,9 +2,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { LOOKS, type Grade } from '@/content/fun';
-import { fitSize, paintGrade, type Frame } from '../paint';
+import { blankCrop, type PhotoCrop } from '../crop';
+import { fitSize, paintCropped, type Frame } from '../paint';
 
-export function thumbKey(src: string, id: string, frame: Frame, bw: boolean, grade: Grade): string {
+export function thumbKey(src: string, id: string, frame: Frame, bw: boolean, grade: Grade, crop: PhotoCrop): string {
   return [
     src,
     id,
@@ -20,18 +21,28 @@ export function thumbKey(src: string, id: string, frame: Frame, bw: boolean, gra
     grade.fade,
     grade.grain,
     grade.vignette,
+    crop.x.toFixed(4),
+    crop.y.toFixed(4),
+    crop.w.toFixed(4),
+    crop.h.toFixed(4),
+    crop.angle.toFixed(1),
   ].join('|');
 }
 
-function renderThumb(img: HTMLImageElement, grade: Grade, frame: Frame, bw: boolean): string {
+function renderThumb(img: HTMLImageElement, grade: Grade, frame: Frame, crop: PhotoCrop, bw: boolean): string {
   const max = 64 * Math.min(2, window.devicePixelRatio || 1);
-  const size = fitSize(img.naturalWidth, img.naturalHeight, frame.rotation, max, max);
+  const swapped = ((frame.rotation % 360) + 360) % 360 % 180 !== 0;
+  const ow = swapped ? img.naturalHeight : img.naturalWidth;
+  const oh = swapped ? img.naturalWidth : img.naturalHeight;
+  const cw = Math.max(1, ow * Math.max(0.02, crop.w));
+  const ch = Math.max(1, oh * Math.max(0.02, crop.h));
+  const size = fitSize(cw, ch, 0, max, max);
   const canvas = document.createElement('canvas');
   canvas.width = size.w;
   canvas.height = size.h;
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
-  paintGrade(ctx, img, size.w, size.h, grade, frame, bw);
+  paintCropped(ctx, img, size.w, size.h, grade, frame, crop, bw);
   try {
     return canvas.toDataURL('image/jpeg', 0.72);
   } catch {
@@ -46,6 +57,7 @@ export function useLookThumbs(
   frame: Frame,
   bw: boolean,
   refGrade: Grade | null,
+  crop: PhotoCrop = blankCrop(),
 ): Record<string, string> {
   const cache = useRef(new Map<string, string>());
   const [map, setMap] = useState<Record<string, string>>({});
@@ -59,7 +71,7 @@ export function useLookThumbs(
     const known: Record<string, string> = {};
     const pending: { id: string; grade: Grade; key: string }[] = [];
     for (const job of jobs) {
-      const key = thumbKey(src, job.id, frame, bw, job.grade);
+      const key = thumbKey(src, job.id, frame, bw, job.grade, crop);
       const hit = cache.current.get(key);
       if (hit) known[key] = hit;
       else pending.push({ ...job, key });
@@ -74,7 +86,7 @@ export function useLookThumbs(
       while (index < pending.length && performance.now() - started < 12 && (!deadline || deadline.timeRemaining() > 5)) {
         const job = pending[index];
         index += 1;
-        const url = renderThumb(img, job.grade, frame, bw);
+        const url = renderThumb(img, job.grade, frame, crop, bw);
         if (!url) continue;
         cache.current.set(job.key, url);
         batch[job.key] = url;
@@ -94,7 +106,7 @@ export function useLookThumbs(
     return () => {
       cancel = true;
     };
-  }, [img, src, frame.rotation, frame.flip, bw, refGrade]);
+  }, [img, src, frame.rotation, frame.flip, bw, refGrade, crop]);
 
   return map;
 }

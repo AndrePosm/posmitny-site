@@ -1,4 +1,5 @@
 import type { Grade } from '@/content/fun';
+import type { PhotoCrop } from './crop';
 import type { Frame } from './paint';
 import type { ExportPreset } from './presets';
 import { renderJpeg } from './render';
@@ -12,6 +13,7 @@ type Job = {
   frame: Frame;
   bw: boolean;
   preset: ExportPreset;
+  crop: PhotoCrop;
   panX: number;
   panY: number;
 };
@@ -74,10 +76,11 @@ export async function exportJpeg(
   frame: Frame,
   bw: boolean,
   preset: ExportPreset,
+  crop: PhotoCrop,
   panX: number,
   panY: number,
 ): Promise<Blob> {
-  const onPage = () => renderJpeg(img, srcW, srcH, grade, frame, bw, preset, panX, panY);
+  const onPage = () => renderJpeg(img, srcW, srcH, grade, frame, bw, preset, crop, panX, panY);
   const thread = getWorker();
   if (!thread) return onPage();
 
@@ -92,7 +95,7 @@ export async function exportJpeg(
   try {
     return await new Promise<Blob>((resolve, reject) => {
       waiters.set(id, { resolve, reject });
-      const message: Job = { id, bitmap, srcW, srcH, grade, frame, bw, preset, panX, panY };
+      const message: Job = { id, bitmap, srcW, srcH, grade, frame, bw, preset, crop, panX, panY };
       thread.postMessage(message, [bitmap]);
     });
   } catch {
