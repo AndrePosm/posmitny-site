@@ -1,196 +1,277 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { ADJUSTMENTS, LOOKS, NEUTRAL_GRADE, matchLook, type Grade } from '@/content/fun';
 import { PHOTOS, PHOTO_ORDER, type PhotoKey } from '@/content/me';
 import { cropFractions } from './crop';
+import { exportJpeg } from './exportClient';
+import { MAX_FILE, MAX_ROLL, isImage, loadImage, saveBlob, shortName, slug, stem } from './files';
 import { matchToReference } from './match';
 import { paintGrade, previewPixels, type Frame } from './paint';
 import { EXPORTS, exportById, type ExportId } from './presets';
-import { renderJpeg } from './render';
 import { zipStore } from './zip';
+import { GradeSlider } from './editor/Slider';
+import {
+  COLOUR_KEYS,
+  DEFAULT_OPEN,
+  EFFECT_KEYS,
+  LIGHT_KEYS,
+  OPEN_KEY,
+  blankPhoto,
+  clamp01,
+  gradeDirty,
+  readOpen,
+  sameGrade,
+  type PhotoState,
+  type SecId,
+} from './editor/model';
+import { thumbKey, useLookThumbs } from './editor/useThumbs';
 
 const START: PhotoKey = 'volcano';
-const MAX_FILE = 25 * 1024 * 1024;
-const MAX_ROLL = 12;
+const SPEC = Object.fromEntries(ADJUSTMENTS.map((item) => [item.key, item])) as Record<keyof Grade, (typeof ADJUSTMENTS)[number]>;
+const TABS: SecId[] = ['looks', 'light', 'colour', 'effects', 'export'];
+const TAB_LABEL: Record<SecId, string> = {
+  looks: 'Looks',
+  light: 'Light',
+  colour: 'Colour',
+  effects: 'Effects',
+  export: 'Export',
+};
 
-type Source = { kind: 'site'; key: PhotoKey } | { kind: 'upload'; id: string };
-type Upload = { id: string; url: string; name: string };
-type Adjustment = (typeof ADJUSTMENTS)[number];
+const SHORTCUTS: [string, string][] = [
+  ['E', 'Export'],
+  ['R', 'Reset'],
+  ['B', 'Black and white'],
+  ['←  →', 'Previous or next photo'],
+  ['\\', 'Before / after'],
+  ['⌘/Ctrl C', 'Copy the style'],
+  ['⌘/Ctrl V', 'Paste the style'],
+  ['?', 'This cheat sheet'],
+  ['Double-click', 'Reset a slider'],
+  ['Shift + arrows', 'Nudge a slider by 10'],
+];
 
 let uploadSeq = 0;
 
-function shortName(cap: string): string {
-  const i = cap.indexOf('·');
-  return (i === -1 ? cap : cap.slice(0, i)).trim();
+function siteId(key: PhotoKey): string {
+  return `s:${key}`;
 }
 
-function isImage(file: File): boolean {
-  if (file.type.startsWith('image/')) return true;
-  return /\.(jpe?g|png|webp|gif|avif)$/i.test(file.name);
+function initialPhotos(): Record<string, PhotoState> {
+  const map: Record<string, PhotoState> = {};
+  for (const key of PHOTO_ORDER) map[siteId(key)] = blankPhoto();
+  return map;
 }
 
-function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'photo';
+function photoKey(id: string): PhotoKey | null {
+  if (!id.startsWith('s:')) return null;
+  const key = id.slice(2) as PhotoKey;
+  return key in PHOTOS ? key : null;
 }
 
-function clamp01(v: number): number {
-  return Math.max(0, Math.min(1, v));
-}
+type Toast = { text: string; tone: 'ok' | 'err' };
+type MenuKind = 'sync' | 'export';
+type Shot = { img: HTMLImageElement; src: string };
 
-function stem(name: string): string {
-  return name.replace(/\.[^.]+$/, '') || 'Your photo';
-}
-
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 2500);
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('load'));
-    img.src = src;
-  });
-}
-
-/** One grade slider. A double-click or a double-tap puts it back to its default. */
-function GradeSlider({ spec, value, onChange }: { spec: Adjustment; value: number; onChange: (value: number) => void }) {
-  const lastTap = useRef<{ t: number; x: number; y: number } | null>(null);
-  const down = useRef<{ x: number; y: number } | null>(null);
-  const ignore = useRef(false);
-  const fallback = NEUTRAL_GRADE[spec.key];
-
-  function resetToDefault() {
-    ignore.current = true;
-    onChange(fallback);
-    requestAnimationFrame(() => {
-      onChange(fallback);
-      requestAnimationFrame(() => {
-        ignore.current = false;
-      });
-    });
-  }
-
+function IconRotate({ dir }: { dir: 'left' | 'right' }) {
+  const left = dir === 'left';
   return (
-    <div
-      className="ed-slider"
-      onDoubleClick={(e) => {
-        e.preventDefault();
-        resetToDefault();
-      }}
-      onPointerDown={(e) => {
-        down.current = { x: e.clientX, y: e.clientY };
-      }}
-      onPointerUp={(e) => {
-        if (e.pointerType === 'mouse') return;
-        const start = down.current;
-        down.current = null;
-        if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 12) {
-          lastTap.current = null;
-          return;
-        }
-        const now = performance.now();
-        const prev = lastTap.current;
-        if (prev && now - prev.t < 350 && Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < 32) {
-          lastTap.current = null;
-          resetToDefault();
-          return;
-        }
-        lastTap.current = { t: now, x: e.clientX, y: e.clientY };
-      }}
-    >
-      <label htmlFor={`ed-${spec.key}`}>
-        <span>{spec.label}</span>
-        <span>{spec.hint(value)}</span>
-      </label>
-      <input
-        id={`ed-${spec.key}`}
-        className="range"
-        type="range"
-        min={spec.min}
-        max={spec.max}
-        step={1}
-        value={value}
-        aria-valuetext={spec.hint(value)}
-        title="Double-click or double-tap to reset"
-        onChange={(e) => {
-          if (ignore.current) {
-            e.currentTarget.value = String(fallback);
-            return;
-          }
-          onChange(Number(e.target.value));
-        }}
-      />
-    </div>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {left ? <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /> : <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />}
+      {left ? <path d="M3 3v5h5" /> : <path d="M21 3v5h-5" />}
+    </svg>
   );
 }
 
-/** Grade a frame from the island, or a roll of your own. Everything stays in the browser. */
+function IconFlip() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M12 4v16" />
+      <path d="M7 8 4 12l3 4M17 8l3 4-3 4" />
+    </svg>
+  );
+}
+
+function Section({
+  id,
+  title,
+  shown,
+  modified,
+  status,
+  onToggle,
+  onReset,
+  children,
+}: {
+  id: SecId;
+  title: string;
+  shown: boolean;
+  modified?: boolean;
+  status?: string;
+  onToggle: () => void;
+  onReset?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className={shown ? `dk-sec is-sheet` : 'dk-sec is-shut'} data-sec={id}>
+      <div className="dk-h">
+        <button type="button" className="dk-h-btn" aria-expanded={shown} onClick={onToggle}>
+          {title}
+          <svg className={shown ? 'dk-chev on' : 'dk-chev'} width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+            <path d="M4 2.2 7.6 6 4 9.8" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <span className="dk-h-side">
+          {modified ? <i className="dk-dot" title="Changed" /> : null}
+          {status ? <span>{status}</span> : null}
+          {onReset ? (
+            <button type="button" className="dk-reset" aria-label={`Reset ${title}`} onClick={onReset}>↺</button>
+          ) : null}
+        </span>
+      </div>
+      <div className="dk-sec-body">
+        <div className="dk-sec-in">{children}</div>
+      </div>
+    </section>
+  );
+}
+
+/** Full-screen darkroom. Grades stay in the browser. */
 export function Editor() {
-  const [source, setSource] = useState<Source>({ kind: 'site', key: START });
-  const [uploads, setUploads] = useState<Upload[]>([]);
-  const [grade, setGrade] = useState<Grade>(NEUTRAL_GRADE);
-  const [rotation, setRotation] = useState(0);
-  const [flip, setFlip] = useState(false);
+  const [photos, setPhotos] = useState<Record<string, PhotoState>>(initialPhotos);
+  const [uploads, setUploads] = useState<{ id: string; url: string; name: string }[]>([]);
+  const [activeId, setActiveId] = useState(siteId(START));
+  const [selection, setSelection] = useState<string[]>(() => PHOTO_ORDER.map(siteId));
   const [bw, setBw] = useState(false);
+  const [split, setSplit] = useState(false);
+  const [splitX, setSplitX] = useState(0.5);
   const [comparing, setComparing] = useState(false);
   const [ready, setReady] = useState(false);
-  const [drag, setDrag] = useState(false);
-  const [refOver, setRefOver] = useState(false);
-  const [error, setError] = useState('');
-  const [tick, setTick] = useState(0);
+  const [zoom, setZoom] = useState<'fit' | '100'>('fit');
+  const [view, setView] = useState({ x: 0, y: 0 });
   const [presetId, setPresetId] = useState<ExportId>('full');
   const [pan, setPan] = useState({ x: 0.5, y: 0.5 });
+  const [open, setOpen] = useState(DEFAULT_OPEN);
+  const [storeReady, setStoreReady] = useState(false);
+  const [sheet, setSheet] = useState<SecId | null>(null);
+  const [mobile, setMobile] = useState(false);
+  const [menu, setMenu] = useState<MenuKind | null>(null);
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 8 });
+  const [help, setHelp] = useState(false);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [busy, setBusy] = useState<'' | 'matching' | 'export'>('');
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [drag, setDrag] = useState(false);
+  const [refOver, setRefOver] = useState(false);
+  const [refGrade, setRefGrade] = useState<Grade | null>(null);
   const [matchName, setMatchName] = useState('');
-  const [busy, setBusy] = useState<'' | 'matching' | 'saving'>('');
-  const [progress, setProgress] = useState('');
+  const [frameShot, setFrameShot] = useState<Shot | null>(null);
+  const [mounted, setMounted] = useState(false);
 
+  const photosRef = useRef(photos);
+  const selectionRef = useRef(selection);
+  const activeRef = useRef(activeId);
+  const uploadsRef = useRef(uploads);
+  const bwRef = useRef(bw);
+  const splitRef = useRef(split);
+  const splitXRef = useRef(splitX);
+  const comparingRef = useRef(comparing);
+  const zoomRef = useRef(zoom);
+  const viewRef = useRef(view);
+  const panRef = useRef(pan);
+  const presetRef = useRef(presetId);
+  const orderRef = useRef<string[]>([]);
+  const imgRef = useRef<HTMLImageElement | null>(null);
   const fitRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const shotRef = useRef<HTMLDivElement>(null);
   const filmRef = useRef<HTMLDivElement>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const uploadsRef = useRef<Upload[]>([]);
-  const dragDepth = useRef(0);
+  const beforeRef = useRef<HTMLCanvasElement | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const helpCloseRef = useRef<HTMLButtonElement>(null);
+  const refInput = useRef<HTMLInputElement>(null);
+  const anchor = useRef(activeId);
+  const clip = useRef<Grade | null>(null);
+  const raf = useRef(0);
+  const aliveRef = useRef(true);
   const saving = useRef(false);
   const matching = useRef(false);
-  const paintRef = useRef<() => void>(() => {});
+  const dragDepth = useRef(0);
+  const toastTimer = useRef(0);
+  const holdTimer = useRef(0);
+  const hold = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const gesture = useRef<'none' | 'hold' | 'pan'>('none');
   const cropDrag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
-  const frame: Frame = { rotation, flip };
-  const look = matchLook(grade);
-  const upload = source.kind === 'upload' ? uploads.find((item) => item.id === source.id) : undefined;
-  const caption = source.kind === 'site' ? PHOTOS[source.key].cap : (upload?.name ?? 'Your photo');
-  const alt = source.kind === 'site' ? PHOTOS[source.key].alt : 'Your photo';
-  const lookLabel = LOOKS.find((l) => l.id === look)?.label ?? 'Tweaked';
-  const picture = bw ? ' Black and white.' : '';
-  const preset = exportById(presetId);
-  const activeSrc = source.kind === 'site' ? PHOTOS[source.key].src : upload?.url;
-  const rollCount = uploads.length > 0 ? uploads.length : PHOTO_ORDER.length;
+  activeRef.current = activeId;
+  selectionRef.current = selection;
+  uploadsRef.current = uploads;
+  bwRef.current = bw;
+  splitRef.current = split;
+  splitXRef.current = splitX;
+  comparingRef.current = comparing;
+  zoomRef.current = zoom;
+  viewRef.current = view;
+  panRef.current = pan;
+  presetRef.current = presetId;
 
-  const natural = imgRef.current;
-  const orientedW = natural && rotation % 180 !== 0 ? natural.naturalHeight : (natural?.naturalWidth ?? 1);
-  const orientedH = natural && rotation % 180 !== 0 ? natural.naturalWidth : (natural?.naturalHeight ?? 1);
-  const crop = preset.aspect != null && ready ? cropFractions(orientedW, orientedH, preset.aspect, pan.x, pan.y) : null;
+  const orderedIds = PHOTO_ORDER.map(siteId).concat(uploads.map((item) => `u:${item.id}`));
+  orderRef.current = orderedIds;
+  const activePhoto = photos[activeId] ?? blankPhoto();
+  const grade = activePhoto.grade;
+  const frame: Frame = { rotation: activePhoto.rotation, flip: activePhoto.flip };
+  const preset = exportById(presetId);
+  const lookId = matchLook(grade);
+  const refActive = !!refGrade && sameGrade(grade, refGrade) && lookId === 'custom';
+  const lookMeta = LOOKS.find((look) => look.id === lookId);
+  const lookStatus = lookId !== 'custom' ? (lookMeta?.label ?? 'Original') : refActive ? 'Ref' : 'Tweaked';
+  const synced = orderedIds.filter((id) => photos[id] && sameGrade(photos[id].grade, grade)).length;
+  const exportIds = selection.length ? orderedIds.filter((id) => selection.includes(id)) : [activeId];
+  const locked = busy !== '';
+  const activeSrc = (() => {
+    const key = photoKey(activeId);
+    if (key) return PHOTOS[key].src;
+    return uploads.find((item) => `u:${item.id}` === activeId)?.url ?? '';
+  })();
+  const activeName = (() => {
+    const key = photoKey(activeId);
+    if (key) return shortName(PHOTOS[key].cap);
+    return uploads.find((item) => `u:${item.id}` === activeId)?.name ?? 'Your photo';
+  })();
+  const activeAlt = (() => {
+    const key = photoKey(activeId);
+    return key ? PHOTOS[key].alt : 'Your photo';
+  })();
+  const aspect = (() => {
+    const key = photoKey(activeId);
+    return key ? { w: PHOTOS[key].w, h: PHOTOS[key].h } : { w: 4, h: 3 };
+  })();
+
+  const thumbs = useLookThumbs(frameShot?.img ?? null, frameShot?.src ?? '', frame, bw, refGrade);
 
   const paint = useCallback(() => {
     const img = imgRef.current;
     const canvas = canvasRef.current;
     const box = fitRef.current;
-    if (!img?.naturalWidth || !canvas || !box) return;
+    const photo = photosRef.current[activeRef.current];
+    if (!img?.naturalWidth || !canvas || !box || !photo) return;
     const rect = box.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const size = previewPixels(img.naturalWidth, img.naturalHeight, rotation, rect.width, rect.height, dpr);
+    const rotation = photo.rotation;
+    let size: { w: number; h: number; cssW: number; cssH: number };
+    if (zoomRef.current === '100') {
+      const swapped = ((rotation % 360) + 360) % 360 % 180 !== 0;
+      const ow = swapped ? img.naturalHeight : img.naturalWidth;
+      const oh = swapped ? img.naturalWidth : img.naturalHeight;
+      const scale = Math.min(1, 4096 / Math.max(ow, oh));
+      const w = Math.max(1, Math.round(ow * scale));
+      const h = Math.max(1, Math.round(oh * scale));
+      size = { w, h, cssW: w / dpr, cssH: h / dpr };
+    } else {
+      size = previewPixels(img.naturalWidth, img.naturalHeight, rotation, rect.width, rect.height, dpr);
+    }
     if (canvas.width !== size.w || canvas.height !== size.h) {
       canvas.width = size.w;
       canvas.height = size.h;
@@ -199,143 +280,365 @@ export function Editor() {
     canvas.style.height = `${size.cssH}px`;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    // Black and white is a view, so compare stays in it and the grade itself is unchanged.
-    paintGrade(ctx, img, size.w, size.h, comparing ? NEUTRAL_GRADE : grade, { rotation, flip }, bw);
-  }, [grade, rotation, flip, comparing, bw]);
+    const viewFrame = { rotation, flip: photo.flip };
+    const mono = bwRef.current;
+    const showOriginal = comparingRef.current;
+    if (showOriginal || !splitRef.current) {
+      paintGrade(ctx, img, size.w, size.h, showOriginal ? NEUTRAL_GRADE : photo.grade, viewFrame, mono);
+      return;
+    }
+    if (!beforeRef.current) beforeRef.current = document.createElement('canvas');
+    const before = beforeRef.current;
+    if (before.width !== size.w || before.height !== size.h) {
+      before.width = size.w;
+      before.height = size.h;
+    }
+    const bctx = before.getContext('2d');
+    if (!bctx) return;
+    paintGrade(bctx, img, size.w, size.h, NEUTRAL_GRADE, viewFrame, mono);
+    paintGrade(ctx, img, size.w, size.h, photo.grade, viewFrame, mono);
+    const cut = Math.round(size.w * splitXRef.current);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, cut, size.h);
+    ctx.clip();
+    ctx.drawImage(before, 0, 0);
+    ctx.restore();
+  }, []);
 
-  useEffect(() => {
-    paintRef.current = paint;
+  const schedule = useCallback(() => {
+    if (raf.current) return;
+    raf.current = requestAnimationFrame(() => {
+      raf.current = 0;
+      if (!aliveRef.current) return;
+      setPhotos(photosRef.current);
+      paint();
+    });
   }, [paint]);
 
-  useEffect(() => {
-    paint();
-  }, [paint, tick]);
-
-  useEffect(() => {
-    const box = fitRef.current;
-    if (!box) return;
-    const ro = new ResizeObserver(() => paintRef.current());
-    ro.observe(box);
-    return () => ro.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!activeSrc) return;
-    let cancelled = false;
-    const img = new Image();
-    img.decoding = 'async';
-    img.onload = () => {
-      if (cancelled) return;
-      imgRef.current = img;
-      setReady(true);
-      setError('');
-      setTick((n) => n + 1);
-    };
-    img.onerror = () => {
-      if (cancelled) return;
-      setError(source.kind === 'upload' ? 'This browser couldn’t read that file. Try a JPEG or PNG.' : 'That photo didn’t load.');
-    };
-    img.src = activeSrc;
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSrc, source.kind]);
-
-  useEffect(() => {
-    const scroller = filmRef.current;
-    const el = scroller?.querySelector<HTMLElement>('[aria-pressed="true"]');
-    if (!scroller || !el) return;
-    const er = el.getBoundingClientRect();
-    const sr = scroller.getBoundingClientRect();
-    if (er.left < sr.left) scroller.scrollLeft -= sr.left - er.left + 8;
-    else if (er.right > sr.right) scroller.scrollLeft += er.right - sr.right + 8;
-  }, [source, uploads]);
-
-  useEffect(() => {
-    uploadsRef.current = uploads;
-  }, [uploads]);
-
-  useEffect(() => () => {
-    for (const item of uploadsRef.current) URL.revokeObjectURL(item.url);
-  }, []);
-
-  function chooseSite(key: PhotoKey) {
-    setSource({ kind: 'site', key });
-    setRotation(0);
-    setFlip(false);
-    setError('');
+  function patch(update: (cur: Record<string, PhotoState>) => Record<string, PhotoState>) {
+    const next = update(photosRef.current);
+    if (next === photosRef.current) return;
+    photosRef.current = next;
+    schedule();
   }
 
-  function takeFiles(list: FileList | File[] | undefined) {
+  function targetIds(): string[] {
+    const sel = selectionRef.current;
+    const id = activeRef.current;
+    if (sel.includes(id) && sel.length) return sel;
+    return [id];
+  }
+
+  function setKey(key: keyof Grade, value: number) {
+    const ids = targetIds();
+    patch((cur) => {
+      let changed = false;
+      const next = { ...cur };
+      for (const id of ids) {
+        const photo = next[id];
+        if (!photo || photo.grade[key] === value) continue;
+        changed = true;
+        next[id] = { ...photo, grade: { ...photo.grade, [key]: value } };
+      }
+      return changed ? next : cur;
+    });
+  }
+
+  function applyGrade(nextGrade: Grade) {
+    const ids = targetIds();
+    patch((cur) => {
+      const next = { ...cur };
+      for (const id of ids) {
+        if (!next[id]) continue;
+        next[id] = { ...next[id], grade: { ...nextGrade } };
+      }
+      return next;
+    });
+  }
+
+  function resetKeys(keys: readonly (keyof Grade)[]) {
+    const ids = targetIds();
+    patch((cur) => {
+      const next = { ...cur };
+      for (const id of ids) {
+        const photo = next[id];
+        if (!photo) continue;
+        const nextGrade = { ...photo.grade };
+        for (const key of keys) nextGrade[key] = NEUTRAL_GRADE[key];
+        next[id] = { ...photo, grade: nextGrade };
+      }
+      return next;
+    });
+  }
+
+  function resetAll() {
+    const ids = targetIds();
+    patch((cur) => {
+      const next = { ...cur };
+      for (const id of ids) {
+        if (!next[id]) continue;
+        next[id] = { ...next[id], grade: { ...NEUTRAL_GRADE }, rotation: 0, flip: false };
+      }
+      return next;
+    });
+    bwRef.current = false;
+    setBw(false);
+    splitRef.current = false;
+    setSplit(false);
+    comparingRef.current = false;
+    setComparing(false);
+    setPan({ x: 0.5, y: 0.5 });
+    zoomRef.current = 'fit';
+    setZoom('fit');
+    setView({ x: 0, y: 0 });
+  }
+
+  function rotate(delta: number) {
+    const id = activeRef.current;
+    patch((cur) => {
+      const photo = cur[id];
+      if (!photo) return cur;
+      return { ...cur, [id]: { ...photo, rotation: (photo.rotation + delta + 360) % 360 } };
+    });
+    setView({ x: 0, y: 0 });
+  }
+
+  function toggleFlip() {
+    const id = activeRef.current;
+    patch((cur) => {
+      const photo = cur[id];
+      if (!photo) return cur;
+      return { ...cur, [id]: { ...photo, flip: !photo.flip } };
+    });
+  }
+
+  function toggleBw() {
+    const next = !bwRef.current;
+    bwRef.current = next;
+    setBw(next);
+    schedule();
+  }
+
+  function toggleSplit() {
+    const next = !splitRef.current;
+    splitRef.current = next;
+    setSplit(next);
+    schedule();
+  }
+
+  function setZoomMode(next: 'fit' | '100') {
+    zoomRef.current = next;
+    setZoom(next);
+    setView({ x: 0, y: 0 });
+    schedule();
+  }
+
+  function flash(text: string, tone: Toast['tone'] = 'ok') {
+    setToast({ text, tone });
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), tone === 'err' ? 4200 : 2400);
+  }
+
+  function copyStyle() {
+    const photo = photosRef.current[activeRef.current];
+    if (!photo) return;
+    clip.current = { ...photo.grade };
+    flash('Style copied');
+  }
+
+  function pasteStyle() {
+    if (!clip.current) return;
+    applyGrade(clip.current);
+    flash('Style pasted');
+  }
+
+  function step(dir: number) {
+    const ids = orderRef.current;
+    if (!ids.length) return;
+    const index = ids.indexOf(activeRef.current);
+    setActiveId(ids[(index + dir + ids.length) % ids.length]);
+  }
+
+  function srcOf(id: string): string | undefined {
+    const key = photoKey(id);
+    if (key) return PHOTOS[key].src;
+    return uploadsRef.current.find((item) => `u:${item.id}` === id)?.url;
+  }
+
+  function baseOf(id: string): string {
+    const key = photoKey(id);
+    if (key) return key;
+    const item = uploadsRef.current.find((entry) => `u:${entry.id}` === id);
+    return slug(item?.name ?? 'photo');
+  }
+
+  async function runExport(ids: string[], asBw: boolean) {
+    if (saving.current || !ids.length || !aliveRef.current) return;
+    saving.current = true;
+    setBusy('export');
+    setMenu(null);
+    setProgress({ done: 0, total: ids.length });
+    const presetNow = exportById(presetRef.current);
+    const panNow = panRef.current;
+    try {
+      const stored: { name: string; blob: Blob; data?: Uint8Array }[] = [];
+      const used = new Set<string>();
+      for (let i = 0; i < ids.length; i += 1) {
+        if (!aliveRef.current) return;
+        const id = ids[i];
+        const photo = photosRef.current[id];
+        const src = srcOf(id);
+        if (!photo || !src) continue;
+        setProgress({ done: i, total: ids.length });
+        const img = await loadImage(src);
+        const blob = await exportJpeg(
+          img,
+          img.naturalWidth,
+          img.naturalHeight,
+          photo.grade,
+          { rotation: photo.rotation, flip: photo.flip },
+          asBw,
+          presetNow,
+          panNow.x,
+          panNow.y,
+        );
+        const lookSlug = matchLook(photo.grade) === 'custom' ? 'tweaked' : matchLook(photo.grade);
+        const parts = [baseOf(id), lookSlug];
+        if (asBw) parts.push('bw');
+        if (presetNow.suffix) parts.push(presetNow.suffix);
+        let stemName = parts.join('-');
+        if (ids.length > 1) {
+          if (used.has(stemName)) stemName = `${stemName}-${i + 1}`;
+          used.add(stemName);
+          const data = new Uint8Array(await blob.arrayBuffer());
+          stored.push({ name: `${String(stored.length + 1).padStart(2, '0')}-${stemName}.jpg`, blob, data });
+        } else {
+          stored.push({ name: `posmitny-${stemName}.jpg`, blob });
+        }
+        if (aliveRef.current) setProgress({ done: i + 1, total: ids.length });
+      }
+      if (!stored.length) throw new Error('empty');
+      if (stored.length === 1 && ids.length === 1) saveBlob(stored[0].blob, stored[0].name);
+      else {
+        const zipped = zipStore(stored.map((file) => ({ name: file.name, data: file.data ?? new Uint8Array() })));
+        const copy = new Uint8Array(zipped.byteLength);
+        copy.set(zipped);
+        const lookSlug = matchLook(photosRef.current[activeRef.current]?.grade ?? NEUTRAL_GRADE);
+        const slugLook = lookSlug === 'custom' ? 'tweaked' : lookSlug;
+        const label = ids.every((id) => id.startsWith('u:')) ? 'roll' : 'island';
+        const extra = presetNow.suffix ? `-${presetNow.suffix}` : '';
+        const bwExtra = asBw ? '-bw' : '';
+        saveBlob(new Blob([copy], { type: 'application/zip' }), `posmitny-${label}-${slugLook}${bwExtra}${extra}.zip`);
+      }
+      if (aliveRef.current) flash(`Exported ${stored.length} ✓`);
+    } catch {
+      if (aliveRef.current) flash(ids.length > 1 ? 'Couldn’t save the roll. Try again.' : 'Couldn’t save that one. Try again.', 'err');
+    } finally {
+      saving.current = false;
+      if (aliveRef.current) {
+        setBusy('');
+        setProgress(null);
+      }
+    }
+  }
+
+  function syncSelected() {
+    const ids = selectionRef.current;
+    const photo = photosRef.current[activeRef.current];
+    if (!ids.length || !photo) return;
+    const nextGrade = { ...photo.grade };
+    patch((cur) => {
+      const next = { ...cur };
+      for (const id of ids) {
+        if (!next[id]) continue;
+        next[id] = { ...next[id], grade: { ...nextGrade } };
+      }
+      return next;
+    });
+  }
+
+  function onThumb(id: string, event: MouseEvent) {
+    const ids = orderRef.current;
+    if (event.shiftKey) {
+      const from = Math.max(0, ids.indexOf(anchor.current));
+      const to = Math.max(0, ids.indexOf(id));
+      const [lo, hi] = from < to ? [from, to] : [to, from];
+      const range = ids.slice(lo, hi + 1);
+      setSelection((prev) => Array.from(new Set([...prev, ...range])));
+    } else if (event.metaKey || event.ctrlKey) {
+      setSelection((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+    }
+    anchor.current = id;
+    setActiveId(id);
+  }
+
+  function toggleSelected(id: string) {
+    setSelection((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+    anchor.current = id;
+  }
+
+  function takeFiles(list?: FileList | File[]) {
     if (!list || list.length === 0) return;
     const images = Array.from(list).filter(isImage);
     if (!images.length) {
-      setError('That file isn’t a photo. Try a JPEG or PNG.');
+      flash('That file isn’t a photo. Try a JPEG or PNG.', 'err');
       return;
     }
     if (images.some((file) => file.size > MAX_FILE)) {
-      setError('That photo is too heavy. Try one under 25 MB.');
+      flash('That photo is too heavy. Try one under 25 MB.', 'err');
       return;
     }
-    const room = MAX_ROLL - uploads.length;
+    const room = MAX_ROLL - uploadsRef.current.length;
     if (room <= 0) {
-      setError(`The roll holds ${MAX_ROLL} photos.`);
+      flash(`The roll holds ${MAX_ROLL} photos.`, 'err');
       return;
     }
     const accepted = images.slice(0, room);
-    setError(accepted.length < images.length ? `The roll holds ${MAX_ROLL} photos.` : '');
+    if (accepted.length < images.length) flash(`The roll holds ${MAX_ROLL} photos.`, 'err');
     const added = accepted.map((file) => {
       uploadSeq += 1;
       return { id: `u${uploadSeq}`, url: URL.createObjectURL(file), name: stem(file.name) };
     });
+    const firstUpload = uploadsRef.current.length === 0;
+    patch((cur) => {
+      const next = { ...cur };
+      for (const item of added) next[`u:${item.id}`] = blankPhoto();
+      return next;
+    });
     setUploads((prev) => [...prev, ...added]);
-    setSource({ kind: 'upload', id: added[0].id });
-    setRotation(0);
-    setFlip(false);
+    const ids = added.map((item) => `u:${item.id}`);
+    setActiveId(ids[0]);
+    setSelection((prev) => (firstUpload ? ids : Array.from(new Set([...prev, ...ids]))));
+    anchor.current = ids[0];
   }
 
   function removeUpload(id: string) {
+    const pid = `u:${id}`;
     setUploads((prev) => {
       const item = prev.find((entry) => entry.id === id);
       if (item) URL.revokeObjectURL(item.url);
       return prev.filter((entry) => entry.id !== id);
     });
-    if (source.kind === 'upload' && source.id === id) {
-      setSource({ kind: 'site', key: START });
-      setRotation(0);
-      setFlip(false);
-    }
-  }
-
-  function applyLook(id: string) {
-    const next = LOOKS.find((l) => l.id === id);
-    if (!next) return;
-    setGrade(next.grade);
-    setMatchName('');
-  }
-
-  const setPart = useCallback((key: keyof Grade, value: number) => {
-    setGrade((prev) => ({ ...prev, [key]: value }));
-  }, []);
-
-  function reset() {
-    setGrade(NEUTRAL_GRADE);
-    setRotation(0);
-    setFlip(false);
-    setBw(false);
-    setPan({ x: 0.5, y: 0.5 });
-    setMatchName('');
-  }
-
-  function choosePreset(id: ExportId) {
-    setPresetId(id);
-    setPan({ x: 0.5, y: 0.5 });
+    patch((cur) => {
+      if (!cur[pid]) return cur;
+      const next = { ...cur };
+      delete next[pid];
+      return next;
+    });
+    setSelection((prev) => {
+      const next = prev.filter((entry) => entry !== pid);
+      const left = uploadsRef.current.some((entry) => entry.id !== id);
+      if (!left) return PHOTO_ORDER.map(siteId);
+      return next;
+    });
+    if (activeRef.current === pid) setActiveId(siteId(START));
   }
 
   async function onReference(file: File | undefined) {
     if (!file || busy || matching.current || saving.current) return;
     if (!isImage(file)) {
-      setError('That file isn’t a photo. Try a JPEG or PNG.');
+      flash('That file isn’t a photo. Try a JPEG or PNG.', 'err');
       return;
     }
     const img = imgRef.current;
@@ -343,391 +646,723 @@ export function Editor() {
     const url = URL.createObjectURL(file);
     matching.current = true;
     setBusy('matching');
-    setError('');
     await new Promise((resolve) => window.setTimeout(resolve, 30));
     try {
       const ref = await loadImage(url);
-      const next = matchToReference(img, img.naturalWidth, img.naturalHeight, ref, ref.naturalWidth, ref.naturalHeight, grade);
-      setGrade(next);
+      const current = photosRef.current[activeRef.current]?.grade ?? NEUTRAL_GRADE;
+      const next = matchToReference(img, img.naturalWidth, img.naturalHeight, ref, ref.naturalWidth, ref.naturalHeight, current);
+      setRefGrade({ ...next });
       setMatchName(stem(file.name));
+      applyGrade(next);
     } catch {
-      setError('Couldn’t read that reference.');
+      flash('Couldn’t read that reference.', 'err');
     } finally {
       URL.revokeObjectURL(url);
       matching.current = false;
-      setBusy('');
+      if (aliveRef.current) setBusy('');
     }
   }
 
-  async function download(asBw: boolean) {
-    const img = imgRef.current;
-    if (!img?.naturalWidth || saving.current) return;
-    saving.current = true;
-    setBusy('saving');
-    setProgress('');
-    try {
-      const blob = await renderJpeg(img, img.naturalWidth, img.naturalHeight, grade, frame, asBw, preset, pan.x, pan.y);
-      const base = source.kind === 'site' ? source.key : slug(upload?.name ?? 'photo');
-      const lookSlug = look === 'custom' ? 'tweaked' : look;
-      const parts = [`posmitny-${base}-${lookSlug}`];
-      if (asBw) parts.push('bw');
-      if (preset.suffix) parts.push(preset.suffix);
-      saveBlob(blob, `${parts.join('-')}.jpg`);
-    } catch {
-      setError('Couldn’t save that one. Try again.');
-    } finally {
-      saving.current = false;
-      setBusy('');
-    }
+  function choosePreset(id: ExportId) {
+    setPresetId(id);
+    setPan({ x: 0.5, y: 0.5 });
   }
 
-  async function downloadAll() {
-    if (saving.current) return;
-    const items = uploads.length > 0
-      ? uploads.map((item) => ({
-          name: slug(item.name),
-          src: item.url,
-          frame: source.kind === 'upload' && source.id === item.id ? frame : { rotation: 0, flip: false },
-          panX: pan.x,
-          panY: pan.y,
-        }))
-      : PHOTO_ORDER.map((key) => ({
-          name: key,
-          src: PHOTOS[key].src,
-          frame: source.kind === 'site' && source.key === key ? frame : { rotation: 0, flip: false },
-          panX: pan.x,
-          panY: pan.y,
-        }));
-    saving.current = true;
-    setBusy('saving');
-    setError('');
-    try {
-      const lookSlug = look === 'custom' ? 'tweaked' : look;
-      const files: { name: string; data: Uint8Array }[] = [];
-      const used = new Set<string>();
-      for (let i = 0; i < items.length; i++) {
-        setProgress(`Saving ${i + 1} of ${items.length}`);
-        await new Promise((resolve) => window.setTimeout(resolve, 0));
-        const img = await loadImage(items[i].src);
-        const blob = await renderJpeg(img, img.naturalWidth, img.naturalHeight, grade, items[i].frame, false, preset, items[i].panX, items[i].panY);
-        let name = items[i].name;
-        if (used.has(name)) name = `${name}-${i + 1}`;
-        used.add(name);
-        const suffix = [lookSlug, preset.suffix].filter(Boolean).join('-');
-        files.push({
-          name: `${String(i + 1).padStart(2, '0')}-${name}-${suffix}.jpg`,
-          data: new Uint8Array(await blob.arrayBuffer()),
-        });
+  function toggleSection(id: SecId) {
+    if (mobile && sheet === id) {
+      setSheet(null);
+      return;
+    }
+    setOpen((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function openMenu(kind: MenuKind, el: HTMLElement) {
+    const rect = el.getBoundingClientRect();
+    setMenuPos({ top: rect.bottom + 6, right: Math.max(8, window.innerWidth - rect.right) });
+    setMenu((current) => (current === kind ? null : kind));
+  }
+
+  function moveSplit(clientX: number) {
+    const shot = shotRef.current;
+    if (!shot) return;
+    const rect = shot.getBoundingClientRect();
+    const next = clamp01((clientX - rect.left) / Math.max(1, rect.width));
+    splitXRef.current = next;
+    setSplitX(next);
+    schedule();
+  }
+
+  const natural = imgRef.current;
+  const orientedW = natural && frame.rotation % 180 !== 0 ? natural.naturalHeight : (natural?.naturalWidth ?? 1);
+  const orientedH = natural && frame.rotation % 180 !== 0 ? natural.naturalWidth : (natural?.naturalHeight ?? 1);
+  const crop = preset.aspect != null && ready ? cropFractions(orientedW, orientedH, preset.aspect, pan.x, pan.y) : null;
+  const stageLabel = comparing
+    ? `${activeAlt}. Original, without the grade.${bw ? ' Black and white.' : ''}`
+    : `${activeAlt}. ${lookStatus}.${bw ? ' Black and white.' : ''}`;
+  const exportLabel = progress ? `Exporting ${progress.done}/${progress.total}` : `Export ${exportIds.length}`;
+  const fill = progress && progress.total ? progress.done / progress.total : 0;
+
+  const api = useRef({
+    exportSel: () => {},
+    reset: () => {},
+    toggleBw: () => {},
+    toggleSplit: () => {},
+    step: (_dir: number) => {},
+    copy: () => {},
+    paste: () => {},
+    help: () => {},
+    escape: () => {},
+    helpOpen: false,
+    menuOpen: false,
+  });
+  api.current = {
+    exportSel: () => { void runExport(exportIds, false); },
+    reset: resetAll,
+    toggleBw,
+    toggleSplit,
+    step,
+    copy: copyStyle,
+    paste: pasteStyle,
+    help: () => setHelp((value) => !value),
+    escape: () => {
+      if (help) setHelp(false);
+      else if (menu) setMenu(null);
+      else if (sheet) setSheet(null);
+    },
+    helpOpen: help,
+    menuOpen: menu !== null,
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+      if (target?.closest('[role="slider"], .dk-crop, .dk-split')) {
+        if (event.key !== 'Escape' && event.key !== '?' && !(event.key === '/' && event.shiftKey)) return;
       }
-      const zipped = zipStore(files);
-      const copy = new Uint8Array(zipped.byteLength);
-      copy.set(zipped);
-      const label = uploads.length > 0 ? 'roll' : 'island';
-      const extra = preset.suffix ? `-${preset.suffix}` : '';
-      saveBlob(new Blob([copy], { type: 'application/zip' }), `posmitny-${label}-${lookSlug}${extra}.zip`);
-    } catch {
-      setError('Couldn’t save the roll. Try again.');
-    } finally {
-      saving.current = false;
-      setBusy('');
-      setProgress('');
-    }
-  }
+      const ui = api.current;
+      if (event.key === 'Escape') {
+        ui.escape();
+        return;
+      }
+      if (ui.helpOpen || ui.menuOpen) {
+        if (event.key === '?' || (event.key === '/' && event.shiftKey)) {
+          event.preventDefault();
+          ui.help();
+        }
+        return;
+      }
+      if (event.repeat && event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === 'c') {
+        if (window.getSelection()?.toString()) return;
+        event.preventDefault();
+        ui.copy();
+        return;
+      }
+      if (meta && event.key.toLowerCase() === 'v') {
+        event.preventDefault();
+        ui.paste();
+        return;
+      }
+      if (meta || event.altKey) return;
+      if (event.key === 'e' || event.key === 'E') {
+        event.preventDefault();
+        ui.exportSel();
+      } else if (event.key === 'r' || event.key === 'R') {
+        event.preventDefault();
+        ui.reset();
+      } else if (event.key === 'b' || event.key === 'B') {
+        event.preventDefault();
+        ui.toggleBw();
+      } else if (event.key === '\\') {
+        event.preventDefault();
+        ui.toggleSplit();
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        ui.step(-1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        ui.step(1);
+      } else if (event.key === '?' || (event.key === '/' && event.shiftKey)) {
+        event.preventDefault();
+        ui.help();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-  function holdStart(e: React.PointerEvent<HTMLButtonElement>) {
-    if (e.button !== 0) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setComparing(true);
-  }
+  useEffect(() => {
+    aliveRef.current = true;
+    setMounted(true);
+    const root = document.documentElement;
+    const prev = root.style.overflow;
+    root.style.overflow = 'hidden';
+    return () => {
+      aliveRef.current = false;
+      root.style.overflow = prev;
+      cancelAnimationFrame(raf.current);
+      raf.current = 0;
+      window.clearTimeout(toastTimer.current);
+      window.clearTimeout(holdTimer.current);
+    };
+  }, []);
 
-  function onCropDown(e: React.PointerEvent<HTMLDivElement>) {
+  useEffect(() => {
+    const box = fitRef.current;
+    if (!box) return;
+    const ro = new ResizeObserver(() => schedule());
+    ro.observe(box);
+    schedule();
+    return () => ro.disconnect();
+  }, [schedule]);
+
+  useEffect(() => {
+    if (!activeSrc) return;
+    let cancel = false;
+    setReady(false);
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      if (cancel) return;
+      imgRef.current = img;
+      setFrameShot({ img, src: activeSrc });
+      setReady(true);
+      paint();
+    };
+    img.onerror = () => {
+      if (cancel) return;
+      flash(activeId.startsWith('u:') ? 'This browser couldn’t read that file. Try a JPEG or PNG.' : 'That photo didn’t load.', 'err');
+    };
+    img.src = activeSrc;
+    return () => { cancel = true; };
+    // flash is recreated each render; the load only depends on the source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSrc, paint]);
+
+  useEffect(() => {
+    setView({ x: 0, y: 0 });
+  }, [activeId]);
+
+  useEffect(() => {
+    const scroller = filmRef.current;
+    const el = scroller?.querySelector<HTMLElement>('[data-active="true"]');
+    if (!scroller || !el) return;
+    const er = el.getBoundingClientRect();
+    const sr = scroller.getBoundingClientRect();
+    if (er.left < sr.left) scroller.scrollLeft -= sr.left - er.left + 8;
+    else if (er.right > sr.right) scroller.scrollLeft += er.right - sr.right + 8;
+  }, [activeId, uploads.length]);
+
+  useEffect(() => () => {
+    for (const item of uploadsRef.current) URL.revokeObjectURL(item.url);
+  }, []);
+
+  useEffect(() => {
+    setOpen(readOpen());
+    setStoreReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!storeReady) return;
+    localStorage.setItem(OPEN_KEY, JSON.stringify(open));
+  }, [open, storeReady]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 800px)');
+    const apply = () => setMobile(mq.matches);
+    apply();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+
+  useEffect(() => {
+    if (!menu) return;
+    const close = (event: globalThis.PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('[data-menu-root]')) return;
+      setMenu(null);
+    };
+    window.addEventListener('pointerdown', close, { passive: true });
+    return () => window.removeEventListener('pointerdown', close);
+  }, [menu]);
+
+  useEffect(() => {
+    if (help) helpCloseRef.current?.focus();
+  }, [help]);
+
+  function onCropDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (!preset.aspect) return;
-    e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    cropDrag.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    cropDrag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
   }
 
-  function onCropMove(e: React.PointerEvent<HTMLDivElement>) {
+  function onCropMove(event: ReactPointerEvent<HTMLDivElement>) {
     const start = cropDrag.current;
     const canvas = canvasRef.current;
     if (!start || !canvas || preset.aspect == null) return;
     const cssW = canvas.clientWidth;
     const cssH = canvas.clientHeight;
-    const window = cropFractions(cssW, cssH, preset.aspect, 0.5, 0.5);
-    const slackX = cssW * (1 - window.w / 100);
-    const slackY = cssH * (1 - window.h / 100);
+    const windowBox = cropFractions(cssW, cssH, preset.aspect, 0.5, 0.5);
+    const slackX = cssW * (1 - windowBox.w / 100);
+    const slackY = cssH * (1 - windowBox.h / 100);
     setPan({
-      x: slackX > 1 ? clamp01(start.panX + (e.clientX - start.x) / slackX) : 0.5,
-      y: slackY > 1 ? clamp01(start.panY + (e.clientY - start.y) / slackY) : 0.5,
+      x: slackX > 1 ? clamp01(start.panX + (event.clientX - start.x) / slackX) : 0.5,
+      y: slackY > 1 ? clamp01(start.panY + (event.clientY - start.y) / slackY) : 0.5,
     });
   }
 
-  function onCropKey(e: React.KeyboardEvent<HTMLDivElement>) {
-    const step = e.shiftKey ? 0.08 : 0.03;
-    if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      setPan((prev) => ({ ...prev, x: clamp01(prev.x - step) }));
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      setPan((prev) => ({ ...prev, x: clamp01(prev.x + step) }));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setPan((prev) => ({ ...prev, y: clamp01(prev.y - step) }));
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setPan((prev) => ({ ...prev, y: clamp01(prev.y + step) }));
+  function onStageDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('.dk-crop, .dk-split, .dk-float, button, a, input, label')) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    hold.current = { x: event.clientX, y: event.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
+    gesture.current = 'none';
+    window.clearTimeout(holdTimer.current);
+    holdTimer.current = window.setTimeout(() => {
+      if (!hold.current || gesture.current === 'pan') return;
+      gesture.current = 'hold';
+      comparingRef.current = true;
+      setComparing(true);
+      schedule();
+    }, 280);
+  }
+
+  function onStageMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const start = hold.current;
+    if (!start) return;
+    const dist = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+    if (gesture.current === 'none' && dist > 8) {
+      window.clearTimeout(holdTimer.current);
+      if (zoomRef.current === '100') gesture.current = 'pan';
+    }
+    if (gesture.current === 'pan') {
+      setView({ x: start.vx + (event.clientX - start.x), y: start.vy + (event.clientY - start.y) });
     }
   }
 
-  const stageLabel = comparing
-    ? `${alt}. Original, without the grade.${picture}`
-    : `${alt}. ${lookLabel}.${picture}`;
-  const locked = busy !== '';
+  function endHold() {
+    window.clearTimeout(holdTimer.current);
+    hold.current = null;
+    if (gesture.current === 'hold') {
+      comparingRef.current = false;
+      setComparing(false);
+      schedule();
+    }
+    gesture.current = 'none';
+  }
+
+  function lookSrc(id: string, sample: Grade): string {
+    if (!frameShot) return '';
+    return thumbs[thumbKey(frameShot.src, id, frame, bw, sample)] ?? '';
+  }
+
+  const dirty: Record<SecId, boolean> = {
+    looks: lookId !== 'original',
+    light: gradeDirty(grade, LIGHT_KEYS),
+    colour: gradeDirty(grade, COLOUR_KEYS),
+    effects: gradeDirty(grade, EFFECT_KEYS),
+    export: presetId !== 'full' || pan.x !== 0.5 || pan.y !== 0.5,
+  };
+
+  function shown(id: SecId): boolean {
+    if (mobile && sheet === id) return true;
+    if (mobile) return false;
+    return open[id];
+  }
 
   return (
-    <div className="fun-body">
-      <div className="ed-film" ref={filmRef} role="group" aria-label="Choose a photo">
-        {PHOTO_ORDER.map((key) => {
-          const ph = PHOTOS[key];
-          const on = source.kind === 'site' && source.key === key;
-          return (
-            <button key={key} type="button" className={on ? 'ed-thumb on' : 'ed-thumb'} aria-pressed={on} onClick={() => chooseSite(key)}>
-              <span className="ed-pic"><img src={ph.src} alt="" width={ph.w} height={ph.h} draggable={false} /></span>
-              <span className="ed-name">{shortName(ph.cap)}</span>
-            </button>
-          );
-        })}
-        {uploads.map((item) => {
-          const on = source.kind === 'upload' && source.id === item.id;
-          return (
-            <div key={item.id} className="ed-roll">
-              <button type="button" className={on ? 'ed-thumb on' : 'ed-thumb'} aria-pressed={on} onClick={() => { setSource({ kind: 'upload', id: item.id }); setRotation(0); setFlip(false); }}>
-                <span className="ed-pic"><img src={item.url} alt="" draggable={false} /></span>
-                <span className="ed-name">{item.name}</span>
-              </button>
-              <button type="button" className="ed-x" aria-label={`Remove ${item.name}`} onClick={() => removeUpload(item.id)}>×</button>
-            </div>
-          );
-        })}
-        <label className="ed-add">
-          <input
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
-            multiple
-            aria-label={uploads.length ? 'Add photos' : 'Add your photos'}
-            onChange={(e) => {
-              takeFiles(e.target.files ?? undefined);
-              e.target.value = '';
-            }}
-          />
-          <span className="ed-add-box">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden><path d="M12 5v14M5 12h14" /></svg>
-            {uploads.length ? 'Add' : 'Your photos'}
-          </span>
-        </label>
-      </div>
-      {error ? <p className="ed-error" role="alert">{error}</p> : null}
-
-      <div className="ed-grid">
-        <div className="ed-stage-wrap">
-          <div
-            className={drag ? 'ed-stage over' : 'ed-stage'}
-            onDragEnter={(e) => {
-              e.preventDefault();
-              dragDepth.current += 1;
-              setDrag(true);
-            }}
-            onDragOver={(e) => {
-              e.preventDefault();
-              e.dataTransfer.dropEffect = 'copy';
-            }}
-            onDragLeave={() => {
-              dragDepth.current -= 1;
-              if (dragDepth.current <= 0) {
-                dragDepth.current = 0;
-                setDrag(false);
-              }
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              dragDepth.current = 0;
-              setDrag(false);
-              takeFiles(e.dataTransfer.files);
-            }}
-          >
-            <div className="ed-fit" ref={fitRef}>
-              <div className="ed-shot">
-                <canvas ref={canvasRef} role="img" aria-label={stageLabel} style={{ visibility: ready ? 'visible' : 'hidden' }} />
-                {crop ? (
-                  <div
-                    className="ed-crop"
-                    role="application"
-                    tabIndex={0}
-                    aria-label="Crop frame. Drag to move it, or use the arrow keys."
-                    style={{ left: `${crop.x}%`, top: `${crop.y}%`, width: `${crop.w}%`, height: `${crop.h}%` }}
-                    onPointerDown={onCropDown}
-                    onPointerMove={onCropMove}
-                    onPointerUp={() => { cropDrag.current = null; }}
-                    onPointerCancel={() => { cropDrag.current = null; }}
-                    onDoubleClick={(e) => {
-                      e.preventDefault();
-                      setPan({ x: 0.5, y: 0.5 });
-                    }}
-                    onKeyDown={onCropKey}
-                  />
-                ) : null}
-              </div>
-            </div>
-            {!ready ? <p className="ed-loading">Loading the frame.</p> : null}
-            {drag ? <div className="ed-drop">Drop the photos</div> : null}
-            <div className="ed-frame">
-              <button type="button" aria-label="Rotate left" onClick={() => setRotation((r) => (r + 270) % 360)}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>
-              </button>
-              <button type="button" aria-label="Rotate right" onClick={() => setRotation((r) => (r + 90) % 360)}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>
-              </button>
-              <button type="button" aria-label="Flip horizontally" aria-pressed={flip} onClick={() => setFlip((f) => !f)}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M12 4v16" /><path d="M7 8L4 12l3 4M17 8l3 4-3 4" /></svg>
-              </button>
-            </div>
-          </div>
-          <p className="ed-cap">{comparing ? `${caption} · original` : caption}{bw ? ' · black and white' : ''}</p>
+    <div className="dk">
+      <header className="dk-bar">
+        <h1 className="dk-brand"><Link href="/fun">Darkroom</Link></h1>
+        <div className="dk-seg" role="group" aria-label="Colour or black and white">
+          <button type="button" aria-pressed={!bw} onClick={() => { if (bw) toggleBw(); }}>Colour</button>
+          <button type="button" aria-pressed={bw} aria-keyshortcuts="B" onClick={() => { if (!bw) toggleBw(); }}>B&amp;W</button>
         </div>
+        <button type="button" className="dk-ghost" aria-pressed={split} aria-keyshortcuts="\\" aria-label="Before / after" onClick={toggleSplit}>
+          <span className="dk-wide">Before / after</span>
+          <span className="dk-narrow" aria-hidden>⇄</span>
+        </button>
+        <span className="dk-sp" />
+        <p className="dk-lock" title="Photos are graded on this device">
+          <span aria-hidden>🔒</span>
+          <span className="dk-lock-text">Nothing is uploaded</span>
+        </p>
+        <button type="button" className="dk-icon" aria-label="Shortcuts" aria-keyshortcuts="?" onClick={() => setHelp(true)}>?</button>
+        <button
+          type="button"
+          className="dk-ghost dk-match"
+          disabled={locked}
+          onClick={() => refInput.current?.click()}
+          onDragEnter={(event) => { event.preventDefault(); event.stopPropagation(); setRefOver(true); }}
+          onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
+          onDragLeave={() => setRefOver(false)}
+          onDrop={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setRefOver(false);
+            void onReference(event.dataTransfer.files?.[0]);
+          }}
+        >
+          <span className="dk-wide">{busy === 'matching' ? 'Matching…' : 'Match reference'}</span>
+          <span className="dk-narrow" aria-hidden>Ref</span>
+        </button>
+        <div className="dk-splitbtn" data-menu-root>
+          <button type="button" className="dk-ghost dk-main" disabled={locked || selection.length === 0} onClick={syncSelected}>
+            <span className="dk-wide">Sync to {selection.length}</span>
+            <span className="dk-narrow">Sync {selection.length}</span>
+          </button>
+          <button type="button" className="dk-ghost dk-more" aria-label="Sync options" aria-expanded={menu === 'sync'} disabled={locked} onClick={(event) => openMenu('sync', event.currentTarget.parentElement ?? event.currentTarget)}>▾</button>
+        </div>
+        <div className={`dk-splitbtn dk-go${progress ? ' is-busy' : ''}`} data-menu-root>
+          <button type="button" className="dk-pri dk-main" aria-keyshortcuts="E" disabled={!ready || locked} onClick={() => { void runExport(exportIds, false); }}>
+            <span className="dk-go-fill" style={{ transform: `scaleX(${fill})` }} />
+            <span className="dk-go-label">{exportLabel}</span>
+          </button>
+          <button type="button" className="dk-pri dk-more" aria-label="Export presets" aria-expanded={menu === 'export'} disabled={locked} onClick={(event) => openMenu('export', event.currentTarget.parentElement ?? event.currentTarget)}>▾</button>
+        </div>
+      </header>
 
-        <aside className="card ed-panel" aria-label="Grade" aria-busy={locked}>
-          <div className="stack" style={{ gap: 6 }}>
-            <p className="eyebrow">grade</p>
-            <h2 className="ed-kicker">Change the light.</h2>
-          </div>
-
-          <div className="stack" style={{ gap: 8 }}>
-            <span className="ed-label">
-              <span id="ed-view-label">View</span>
-              <span className="muted">{bw ? 'Black and white' : 'Colour'}</span>
-            </span>
-            <div className="chips" role="group" aria-labelledby="ed-view-label">
-              <button type="button" className={bw ? 'chip' : 'chip on'} aria-pressed={!bw} onClick={() => setBw(false)}>Colour</button>
-              <button type="button" className={bw ? 'chip on' : 'chip'} aria-pressed={bw} onClick={() => setBw(true)}>B&amp;W</button>
-            </div>
-            <p id="ed-bw-note" className="ed-note">A view for the tones. Download keeps the colour.</p>
-          </div>
-
-          <div className="stack" style={{ gap: 8 }}>
-            <span className="ed-label">
-              <span>Looks</span>
-              {look === 'custom' ? <span className="muted">Tweaked</span> : null}
-            </span>
-            <div className="chips">
-              {LOOKS.map((l) => (
-                <button key={l.id} type="button" className={look === l.id ? 'chip on' : 'chip'} aria-pressed={look === l.id} onClick={() => applyLook(l.id)}>
-                  {l.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="stack" style={{ gap: 8 }}>
-            <span className="ed-label">
-              <span id="ed-ref-label">Reference</span>
-              <span className="muted">{busy === 'matching' ? 'Matching' : 'Optional'}</span>
-            </span>
-            <label
-              className={refOver ? 'ed-ref over' : 'ed-ref'}
-              onDragEnter={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setRefOver(true);
-              }}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                e.dataTransfer.dropEffect = 'copy';
-              }}
-              onDragLeave={() => setRefOver(false)}
-              onDrop={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setRefOver(false);
-                onReference(e.dataTransfer.files?.[0]);
-              }}
-            >
-              <input
-                type="file"
-                accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
-                aria-labelledby="ed-ref-label"
-                disabled={locked}
-                onChange={(e) => {
-                  onReference(e.target.files?.[0]);
-                  e.target.value = '';
+      <div
+        className={drag ? 'dk-stage over' : 'dk-stage'}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          dragDepth.current += 1;
+          setDrag(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+        }}
+        onDragLeave={() => {
+          dragDepth.current -= 1;
+          if (dragDepth.current <= 0) {
+            dragDepth.current = 0;
+            setDrag(false);
+          }
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          dragDepth.current = 0;
+          setDrag(false);
+          takeFiles(event.dataTransfer.files);
+        }}
+        onPointerDown={onStageDown}
+        onPointerMove={onStageMove}
+        onPointerUp={endHold}
+        onPointerCancel={endHold}
+        onContextMenu={(event) => event.preventDefault()}
+      >
+        <div className={zoom === '100' ? 'dk-fit is-100' : 'dk-fit'} ref={fitRef}>
+          <div
+            className="dk-shot"
+            ref={shotRef}
+            style={zoom === '100' ? { transform: `translate(${view.x}px, ${view.y}px)` } : undefined}
+          >
+            <canvas ref={canvasRef} role="img" aria-label={stageLabel} style={{ visibility: ready ? 'visible' : 'hidden' }} />
+            {crop ? (
+              <div
+                className="dk-crop"
+                role="application"
+                tabIndex={0}
+                aria-label="Crop frame. Drag to move it, or use the arrow keys."
+                style={{ left: `${crop.x}%`, top: `${crop.y}%`, width: `${crop.w}%`, height: `${crop.h}%` }}
+                onPointerDown={onCropDown}
+                onPointerMove={onCropMove}
+                onPointerUp={() => { cropDrag.current = null; }}
+                onPointerCancel={() => { cropDrag.current = null; }}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setPan({ x: 0.5, y: 0.5 });
+                }}
+                onKeyDown={(event) => {
+                  const step = event.shiftKey ? 0.08 : 0.03;
+                  if (event.key === 'ArrowLeft') { event.preventDefault(); event.stopPropagation(); setPan((prev) => ({ ...prev, x: clamp01(prev.x - step) })); }
+                  else if (event.key === 'ArrowRight') { event.preventDefault(); event.stopPropagation(); setPan((prev) => ({ ...prev, x: clamp01(prev.x + step) })); }
+                  else if (event.key === 'ArrowUp') { event.preventDefault(); event.stopPropagation(); setPan((prev) => ({ ...prev, y: clamp01(prev.y - step) })); }
+                  else if (event.key === 'ArrowDown') { event.preventDefault(); event.stopPropagation(); setPan((prev) => ({ ...prev, y: clamp01(prev.y + step) })); }
                 }}
               />
-              {busy === 'matching' ? 'Matching the light…' : 'Match a photo'}
-            </label>
-            <p className="ed-note" aria-live="polite">
-              {matchName ? `Matched to ${matchName}. The sliders still move.` : 'Drop a photo here to borrow its light.'}
-            </p>
+            ) : null}
+            {split ? (
+              <div
+                className="dk-split"
+                role="slider"
+                tabIndex={0}
+                aria-label="Before and after split"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(splitX * 100)}
+                style={{ left: `${splitX * 100}%` }}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  moveSplit(event.clientX);
+                }}
+                onPointerMove={(event) => {
+                  if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                  moveSplit(event.clientX);
+                }}
+                onKeyDown={(event) => {
+                  const step = event.shiftKey ? 0.1 : 0.02;
+                  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const value = clamp01(splitXRef.current + (event.key === 'ArrowLeft' ? -step : step));
+                    splitXRef.current = value;
+                    setSplitX(value);
+                    schedule();
+                  }
+                }}
+              />
+            ) : null}
           </div>
+        </div>
+        {!ready ? <div className="dk-skel" style={{ aspectRatio: `${aspect.w} / ${aspect.h}` }} /> : null}
+        {drag ? <div className="dk-drop">Drop the photos</div> : null}
+        <div className="dk-float" role="toolbar" aria-label="Frame">
+          <button type="button" aria-label="Rotate left" onClick={() => rotate(-90)}><IconRotate dir="left" /></button>
+          <button type="button" aria-label="Rotate right" onClick={() => rotate(90)}><IconRotate dir="right" /></button>
+          <button type="button" aria-label="Flip horizontally" aria-pressed={frame.flip} onClick={toggleFlip}><IconFlip /></button>
+          <button type="button" aria-pressed={zoom === 'fit'} onClick={() => setZoomMode('fit')}>Fit</button>
+          <button type="button" aria-pressed={zoom === '100'} onClick={() => setZoomMode('100')}>100%</button>
+        </div>
+      </div>
 
-          <div className="ed-sliders">
-            {ADJUSTMENTS.map((a) => (
-              <GradeSlider key={a.key} spec={a} value={grade[a.key]} onChange={(value) => setPart(a.key, value)} />
-            ))}
-          </div>
-          <p className="ed-note">Double-click or double-tap a slider to reset it.</p>
-
-          <div className="stack" style={{ gap: 8 }}>
-            <span className="ed-label">
-              <span id="ed-size-label">Export</span>
-              <span className="muted">{preset.label}</span>
-            </span>
-            <div className="chips" role="group" aria-labelledby="ed-size-label">
-              {EXPORTS.map((item) => (
-                <button key={item.id} type="button" className={presetId === item.id ? 'chip on' : 'chip'} aria-pressed={presetId === item.id} onClick={() => choosePreset(item.id)}>
-                  {item.label}
+      <aside className={sheet ? 'dk-panel on' : 'dk-panel'} aria-label="Grade" aria-busy={busy === 'matching'}>
+        <Section
+          id="looks"
+          title="Looks"
+          shown={shown('looks')}
+          modified={dirty.looks}
+          status={lookStatus}
+          onToggle={() => toggleSection('looks')}
+          onReset={() => applyGrade(NEUTRAL_GRADE)}
+        >
+          <div className="dk-looks">
+            {LOOKS.map((look) => {
+              const url = lookSrc(look.id, look.grade);
+              const on = lookId === look.id;
+              return (
+                <button key={look.id} type="button" className={url ? 'dk-look' : 'dk-look is-empty'} aria-pressed={on} onClick={() => applyGrade(look.grade)}>
+                  {url ? <img src={url} alt="" draggable={false} /> : null}
+                  <span>{look.short}</span>
                 </button>
-              ))}
-            </div>
-            <p className="ed-note">{preset.hint}</p>
-          </div>
-
-          <div className="ed-actions">
-            <button type="button" className="btn" onClick={() => download(false)} disabled={!ready || locked}>Download</button>
-            <button type="button" className="ed-ghost" onClick={() => download(true)} disabled={!ready || locked}>Save as B&amp;W</button>
-            <button type="button" className="ed-ghost" onClick={downloadAll} disabled={!ready || locked}>
-              {progress || `Save all · ${rollCount}`}
-            </button>
+              );
+            })}
             <button
               type="button"
-              className="ed-ghost"
-              aria-pressed={comparing}
-              disabled={locked}
-              onPointerDown={holdStart}
-              onPointerUp={() => setComparing(false)}
-              onPointerCancel={() => setComparing(false)}
-              onBlur={() => setComparing(false)}
-              onKeyDown={(e) => {
-                if (e.key === ' ' || e.key === 'Enter') {
-                  e.preventDefault();
-                  setComparing(true);
-                }
-              }}
-              onKeyUp={(e) => {
-                if (e.key === ' ' || e.key === 'Enter') setComparing(false);
+              className={`dk-look${refGrade && !lookSrc('ref', refGrade) ? ' is-empty' : ''}${refOver ? ' over' : ''}`}
+              aria-pressed={refActive}
+              title={matchName ? `Matched to ${matchName}` : 'Match a reference photo'}
+              onClick={() => { if (refGrade) applyGrade(refGrade); else refInput.current?.click(); }}
+              onDragEnter={(event) => { event.preventDefault(); event.stopPropagation(); setRefOver(true); }}
+              onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
+              onDragLeave={() => setRefOver(false)}
+              onDrop={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setRefOver(false);
+                void onReference(event.dataTransfer.files?.[0]);
               }}
             >
-              Hold to compare
+              {refGrade && lookSrc('ref', refGrade) ? <img src={lookSrc('ref', refGrade)} alt="" draggable={false} /> : null}
+              <span>+ Ref</span>
             </button>
           </div>
-          <div className="ed-foot">
-            <span className="muted">
-              {uploads.length > 0 ? 'Your photos, this grade, in colour.' : 'The island frames, this grade, in colour.'}
-              {' '}Made here. Nothing is uploaded.
-            </span>
-            <button type="button" className="ul link-btn" onClick={reset}>Reset</button>
+          {matchName ? <p className="dk-hint">Matched to {matchName}. The sliders still move.</p> : null}
+        </Section>
+
+        <Section id="light" title="Light" shown={shown('light')} modified={dirty.light} onToggle={() => toggleSection('light')} onReset={() => resetKeys(LIGHT_KEYS)}>
+          {LIGHT_KEYS.map((key) => (
+            <GradeSlider key={key} spec={SPEC[key]} value={grade[key]} onChange={(value) => setKey(key, value)} />
+          ))}
+        </Section>
+        <Section id="colour" title="Colour" shown={shown('colour')} modified={dirty.colour} onToggle={() => toggleSection('colour')} onReset={() => resetKeys(COLOUR_KEYS)}>
+          {COLOUR_KEYS.map((key) => (
+            <GradeSlider key={key} spec={SPEC[key]} value={grade[key]} onChange={(value) => setKey(key, value)} />
+          ))}
+        </Section>
+        <Section id="effects" title="Effects" shown={shown('effects')} modified={dirty.effects} onToggle={() => toggleSection('effects')} onReset={() => resetKeys(EFFECT_KEYS)}>
+          {EFFECT_KEYS.map((key) => (
+            <GradeSlider key={key} spec={SPEC[key]} value={grade[key]} onChange={(value) => setKey(key, value)} />
+          ))}
+        </Section>
+        <Section
+          id="export"
+          title="Export preset"
+          shown={shown('export')}
+          modified={dirty.export}
+          onToggle={() => toggleSection('export')}
+          onReset={() => choosePreset('full')}
+        >
+          <div className="dk-seg dk-seg-wrap" role="group" aria-label="Export preset">
+            {EXPORTS.map((item) => (
+              <button key={item.id} type="button" aria-pressed={presetId === item.id} onClick={() => choosePreset(item.id)}>{item.label}</button>
+            ))}
           </div>
-        </aside>
+          <p className="dk-hint">{preset.hint}</p>
+        </Section>
+      </aside>
+
+      <footer className="dk-film">
+        <p className="dk-count">{orderedIds.length === 1 ? '1 photo' : `${orderedIds.length} photos`} · {synced} synced</p>
+        <div
+          className="dk-film-row"
+          ref={filmRef}
+          role="group"
+          aria-label="Photos"
+          onWheel={(event) => {
+            if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) event.currentTarget.scrollLeft += event.deltaY;
+          }}
+        >
+          {orderedIds.map((id) => {
+            const key = photoKey(id);
+            const upload = uploads.find((item) => `u:${item.id}` === id);
+            const src = key ? PHOTOS[key].src : upload?.url;
+            const name = key ? shortName(PHOTOS[key].cap) : (upload?.name ?? 'Photo');
+            const current = id === activeId;
+            const selected = selection.includes(id);
+            if (!src) return null;
+            return (
+              <div key={id} className={`dk-cell${selected ? ' on' : ''}${current ? ' now' : ''}`} data-active={current ? 'true' : undefined}>
+                <button type="button" className="dk-thumb" aria-current={current ? 'true' : undefined} aria-label={name} onClick={(event) => onThumb(id, event)}>
+                  <img src={src} alt="" width={key ? PHOTOS[key].w : undefined} height={key ? PHOTOS[key].h : undefined} draggable={false} />
+                </button>
+                <button type="button" className="dk-tick" aria-pressed={selected} aria-label={`Select ${name}`} onClick={() => toggleSelected(id)}><i /></button>
+                {upload ? (
+                  <button type="button" className="dk-x" aria-label={`Remove ${name}`} onClick={() => removeUpload(upload.id)}>×</button>
+                ) : null}
+              </div>
+            );
+          })}
+          <label className="dk-add">
+            <input
+              className="dk-file"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+              multiple
+              aria-label={uploads.length ? 'Add photos' : 'Add your photos'}
+              onChange={(event) => {
+                takeFiles(event.target.files ?? undefined);
+                event.target.value = '';
+              }}
+            />
+            <span>+ Add</span>
+          </label>
+        </div>
+      </footer>
+
+      <div className="dk-tabs" role="tablist" aria-label="Adjustments">
+        {TABS.map((id) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={sheet === id}
+            className={sheet === id ? 'on' : undefined}
+            onClick={() => setSheet((current) => (current === id ? null : id))}
+          >
+            {TAB_LABEL[id]}
+            {dirty[id] ? <i className="dk-dot" /> : null}
+          </button>
+        ))}
       </div>
+
+      {mobile && sheet ? <button type="button" className="dk-scrim" aria-label="Close panel" onClick={() => setSheet(null)} /> : null}
+      <p className="dk-sr" aria-live="polite">{activeName}{bw ? ', black and white' : ''}</p>
+      <input
+        ref={refInput}
+        className="dk-file"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+        aria-label="Reference photo"
+        onChange={(event) => {
+          void onReference(event.target.files?.[0]);
+          event.target.value = '';
+        }}
+      />
+      {toast ? (
+        <div className={toast.tone === 'err' ? 'dk-toast err' : 'dk-toast'} role={toast.tone === 'err' ? 'alert' : 'status'}>{toast.text}</div>
+      ) : null}
+
+      {mounted && menu ? createPortal(
+        <div className="dk-menu" role="menu" tabIndex={-1} ref={menuRef} data-menu-root style={{ top: menuPos.top, right: menuPos.right }}>
+          {menu === 'export' ? (
+            <>
+              {EXPORTS.map((item) => (
+                <button key={item.id} type="button" role="menuitemradio" aria-checked={presetId === item.id} onClick={() => { choosePreset(item.id); setMenu(null); }}>{item.label}</button>
+              ))}
+              <hr />
+              <button type="button" role="menuitem" onClick={() => { setMenu(null); void runExport([activeId], false); }}>This photo</button>
+              <button type="button" role="menuitem" onClick={() => { setMenu(null); void runExport([activeId], true); }}>Save as B&amp;W</button>
+              {exportIds.length > 1 ? (
+                <button type="button" role="menuitem" onClick={() => { setMenu(null); void runExport(exportIds, true); }}>Selected as B&amp;W</button>
+              ) : null}
+            </>
+          ) : (
+            <>
+              <button type="button" role="menuitem" disabled={selection.length === 0} onClick={() => { syncSelected(); setMenu(null); }}>Sync grade to {selection.length}</button>
+              <button type="button" role="menuitem" onClick={() => { setSelection(orderedIds.slice()); setMenu(null); }}>Select all</button>
+              <button type="button" role="menuitem" onClick={() => { setSelection([]); setMenu(null); }}>Select none</button>
+            </>
+          )}
+        </div>,
+        document.body,
+      ) : null}
+
+      {mounted && help ? createPortal(
+        <div
+          className="dk-help"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) setHelp(false); }}
+        >
+          <div
+            className="dk-help-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dk-help-title"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setHelp(false);
+                return;
+              }
+              if (event.key !== 'Tab') return;
+              const items = event.currentTarget.querySelectorAll<HTMLElement>('button, a');
+              if (!items.length) return;
+              const first = items[0];
+              const last = items[items.length - 1];
+              if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+              }
+            }}
+          >
+            <div className="dk-help-h">
+              <h2 id="dk-help-title">Shortcuts</h2>
+              <button ref={helpCloseRef} type="button" className="dk-icon" aria-label="Close shortcuts" onClick={() => setHelp(false)}>×</button>
+            </div>
+            <div className="dk-keys">
+              {SHORTCUTS.map(([key, label]) => (
+                <div key={key}>
+                  <kbd>{key}</kbd>
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>
+            <p className="dk-hint">Press and hold the photo to see it without the grade. Nothing leaves this device.</p>
+          </div>
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }

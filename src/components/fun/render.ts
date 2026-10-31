@@ -1,19 +1,11 @@
 import type { Grade } from '@/content/fun';
+import { ctx2d, makeCanvas, type AnyCanvas } from './canvas';
 import { cropRect } from './crop';
 import { stripJpegMetadata } from './jpeg';
 import { exportSize, paintGrade, type Frame } from './paint';
 import type { ExportPreset } from './presets';
 
 const JPEG_QUALITY = 0.9;
-
-function canvasOf(w: number, h: number): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, w);
-  canvas.height = Math.max(1, h);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('no context');
-  return { canvas, ctx };
-}
 
 /** Step the scale down by half, then the last jump. Large jumps go soft. */
 function drawScaled(
@@ -24,7 +16,7 @@ function drawScaled(
   sh: number,
   dw: number,
   dh: number,
-): HTMLCanvasElement {
+): AnyCanvas {
   let current = source;
   let x = sx;
   let y = sy;
@@ -33,21 +25,23 @@ function drawScaled(
   while (w * 0.5 >= dw && h * 0.5 >= dh) {
     const nw = Math.max(dw, Math.round(w * 0.5));
     const nh = Math.max(dh, Math.round(h * 0.5));
-    const step = canvasOf(nw, nh);
-    step.ctx.imageSmoothingEnabled = true;
-    step.ctx.imageSmoothingQuality = 'high';
-    step.ctx.drawImage(current, x, y, w, h, 0, 0, nw, nh);
-    current = step.canvas;
+    const step = makeCanvas(nw, nh);
+    const stepCtx = ctx2d(step);
+    stepCtx.imageSmoothingEnabled = true;
+    stepCtx.imageSmoothingQuality = 'high';
+    stepCtx.drawImage(current, x, y, w, h, 0, 0, nw, nh);
+    current = step;
     x = 0;
     y = 0;
     w = nw;
     h = nh;
   }
-  const out = canvasOf(dw, dh);
-  out.ctx.imageSmoothingEnabled = true;
-  out.ctx.imageSmoothingQuality = 'high';
-  out.ctx.drawImage(current, x, y, w, h, 0, 0, dw, dh);
-  return out.canvas;
+  const out = makeCanvas(dw, dh);
+  const outCtx = ctx2d(out);
+  outCtx.imageSmoothingEnabled = true;
+  outCtx.imageSmoothingQuality = 'high';
+  outCtx.drawImage(current, x, y, w, h, 0, 0, dw, dh);
+  return out;
 }
 
 /** A light unsharp mask. Only worth it after a real downscale. */
@@ -72,17 +66,21 @@ function sharpen(ctx: CanvasRenderingContext2D, w: number, h: number, amount = 0
   ctx.putImageData(out, 0, 0);
 }
 
-function jpegBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+async function encodeJpeg(raw: Blob): Promise<Blob> {
+  const stripped = stripJpegMetadata(new Uint8Array(await raw.arrayBuffer()));
+  const copy = new Uint8Array(stripped.byteLength);
+  copy.set(stripped);
+  return new Blob([copy], { type: 'image/jpeg' });
+}
+
+function jpegBlob(canvas: AnyCanvas): Promise<Blob> {
+  if ('convertToBlob' in canvas) {
+    return canvas.convertToBlob({ type: 'image/jpeg', quality: JPEG_QUALITY }).then(encodeJpeg);
+  }
   return new Promise((resolve, reject) => {
-    canvas.toBlob(async (blob) => {
-      if (!blob) {
-        reject(new Error('no blob'));
-        return;
-      }
-      const stripped = stripJpegMetadata(new Uint8Array(await blob.arrayBuffer()));
-      const copy = new Uint8Array(stripped.byteLength);
-      copy.set(stripped);
-      resolve(new Blob([copy], { type: 'image/jpeg' }));
+    (canvas as HTMLCanvasElement).toBlob((blob) => {
+      if (!blob) reject(new Error('no blob'));
+      else resolve(encodeJpeg(blob));
     }, 'image/jpeg', JPEG_QUALITY);
   });
 }
@@ -103,30 +101,30 @@ export async function renderJpeg(
   panY: number,
 ): Promise<Blob> {
   const painted = exportSize(srcW, srcH, frame.rotation, 2560);
-  const base = canvasOf(painted.w, painted.h);
-  paintGrade(base.ctx, img, painted.w, painted.h, grade, frame, bw);
+  const base = makeCanvas(painted.w, painted.h);
+  paintGrade(ctx2d(base), img, painted.w, painted.h, grade, frame, bw);
 
   const aspect = preset.aspect;
   const targetW = preset.width;
   const targetH = preset.height;
-  let out = base.canvas;
+  let out: AnyCanvas = base;
   let scaled = false;
 
   if (aspect != null && targetW != null && targetH != null) {
     const crop = cropRect(painted.w, painted.h, aspect, panX, panY);
     const scale = Math.min(targetW / crop.w, targetH / crop.h);
-    out = drawScaled(base.canvas, crop.x, crop.y, crop.w, crop.h, targetW, targetH);
+    out = drawScaled(base, crop.x, crop.y, crop.w, crop.h, targetW, targetH);
     scaled = scale < 0.98;
   } else if (Math.max(painted.w, painted.h) > preset.longEdge + 1) {
     const fit = exportSize(painted.w, painted.h, 0, preset.longEdge);
-    out = drawScaled(base.canvas, 0, 0, painted.w, painted.h, fit.w, fit.h);
+    out = drawScaled(base, 0, 0, painted.w, painted.h, fit.w, fit.h);
     scaled = true;
   } else if (Math.max(srcW, srcH) > Math.max(painted.w, painted.h) + 1) {
     scaled = true;
   }
 
   if (scaled) {
-    const ctx = out.getContext('2d');
+    const ctx = out.getContext('2d') as CanvasRenderingContext2D | null;
     if (ctx) sharpen(ctx, out.width, out.height);
   }
 

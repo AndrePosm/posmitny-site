@@ -1,4 +1,5 @@
 import type { Grade } from '@/content/fun';
+import { makeCanvas, type AnyCanvas } from './canvas';
 
 export type Frame = { rotation: number; flip: boolean };
 
@@ -13,16 +14,18 @@ const SHADOW_CRUSH = 0.95;
 const HIGHLIGHT_BOOST = 0.75;
 const HIGHLIGHT_PULL = 0.22;
 
-let grainCanvas: HTMLCanvasElement | null = null;
-let scratch: HTMLCanvasElement | null = null;
+let grainCanvas: AnyCanvas | null = null;
+let scratch: AnyCanvas | null = null;
 
-function grainTile(): HTMLCanvasElement | null {
-  if (typeof document === 'undefined') return null;
+function grainTile(): AnyCanvas | null {
   if (grainCanvas) return grainCanvas;
-  const c = document.createElement('canvas');
-  c.width = 160;
-  c.height = 160;
-  const ctx = c.getContext('2d');
+  let c: AnyCanvas;
+  try {
+    c = makeCanvas(160, 160);
+  } catch {
+    return null;
+  }
+  const ctx = c.getContext('2d') as CanvasRenderingContext2D | null;
   if (!ctx) return null;
   const data = ctx.createImageData(160, 160);
   for (let i = 0; i < data.data.length; i += 4) {
@@ -35,12 +38,11 @@ function grainTile(): HTMLCanvasElement | null {
   return c;
 }
 
-function scratchCanvas(w: number, h: number): HTMLCanvasElement | null {
-  if (typeof document === 'undefined') return null;
-  if (!scratch) scratch = document.createElement('canvas');
-  if (scratch.width !== w || scratch.height !== h) {
-    scratch.width = w;
-    scratch.height = h;
+function scratchCanvas(w: number, h: number): AnyCanvas | null {
+  try {
+    if (!scratch || scratch.width !== w || scratch.height !== h) scratch = makeCanvas(w, h);
+  } catch {
+    return null;
   }
   return scratch;
 }
@@ -215,7 +217,7 @@ export function paintGrade(
 
   if (grade.grain > 0) {
     const tile = grainTile();
-    const pattern = tile && ctx.createPattern(tile, 'repeat');
+    const pattern = tile && ctx.createPattern(tile as CanvasImageSource, 'repeat');
     if (pattern) {
       ctx.save();
       ctx.globalCompositeOperation = 'overlay';
