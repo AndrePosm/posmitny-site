@@ -78,14 +78,14 @@ export const FUN = {
   lead: 'A small darkroom for the photos from Fuerteventura. Grade the light, match a reference, or drop in a roll of your own. It stays on this device.',
 } as const;
 
-export const LOOKS: { id: string; label: string; grade: Grade }[] = [
-  { id: 'original', label: 'Original', grade: NEUTRAL_GRADE },
-  { id: 'dawn', label: 'Dawn', grade: grade({ exposure: 10, contrast: -12, warmth: 28, saturation: -6, fade: 22, grain: 8, vignette: 14 }) },
-  { id: 'midday', label: 'Midday', grade: grade({ exposure: 6, contrast: 16, warmth: -6, saturation: 18, vignette: 8 }) },
-  { id: 'golden', label: 'Golden hour', grade: grade({ exposure: 8, contrast: 8, warmth: 62, saturation: 10, fade: 8, grain: 12, vignette: 32 }) },
-  { id: 'storm', label: 'Storm', grade: grade({ exposure: -8, contrast: 28, warmth: -18, saturation: -48, fade: 6, grain: 16, vignette: 36 }) },
-  { id: 'night', label: 'Night', grade: grade({ exposure: -28, contrast: 18, warmth: -10, saturation: -22, grain: 24, vignette: 62 }) },
-  { id: 'film', label: 'Faded film', grade: grade({ exposure: 12, contrast: -18, warmth: 16, saturation: -28, fade: 48, grain: 32, vignette: 20 }) },
+export const LOOKS: { id: string; label: string; short: string; grade: Grade }[] = [
+  { id: 'original', label: 'Original', short: 'Orig', grade: NEUTRAL_GRADE },
+  { id: 'dawn', label: 'Dawn', short: 'Dawn', grade: grade({ exposure: 10, contrast: -12, warmth: 28, saturation: -6, fade: 22, grain: 8, vignette: 14 }) },
+  { id: 'midday', label: 'Midday', short: 'Midday', grade: grade({ exposure: 6, contrast: 16, warmth: -6, saturation: 18, vignette: 8 }) },
+  { id: 'golden', label: 'Golden hour', short: 'Golden', grade: grade({ exposure: 8, contrast: 8, warmth: 62, saturation: 10, fade: 8, grain: 12, vignette: 32 }) },
+  { id: 'storm', label: 'Storm', short: 'Storm', grade: grade({ exposure: -8, contrast: 28, warmth: -18, saturation: -48, fade: 6, grain: 16, vignette: 36 }) },
+  { id: 'night', label: 'Night', short: 'Night', grade: grade({ exposure: -28, contrast: 18, warmth: -10, saturation: -22, grain: 24, vignette: 62 }) },
+  { id: 'film', label: 'Faded film', short: 'Film', grade: grade({ exposure: 12, contrast: -18, warmth: 16, saturation: -28, fade: 48, grain: 32, vignette: 20 }) },
 ];
 
 const GRADE_KEYS = Object.keys(NEUTRAL_GRADE) as (keyof Grade)[];

@@ -1,10 +1,8 @@
 import type { Metadata, Viewport } from 'next';
-import '@fontsource/dm-serif-display/400.css';
 import '@fontsource/figtree/400.css';
 import '@fontsource/figtree/500.css';
 import '@fontsource/figtree/600.css';
 import '@fontsource/figtree/700.css';
-import '@fontsource/instrument-serif/400-italic.css';
 import '@fontsource/geist-mono/400.css';
 import '@fontsource/geist-mono/500.css';
 import './globals.css';

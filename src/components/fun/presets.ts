@@ -26,7 +26,7 @@ export const EXPORTS: ExportPreset[] = [
   },
   {
     id: 'website',
-    label: 'Website',
+    label: 'Web',
     hint: 'The whole frame, long edge up to 2048.',
     aspect: null,
     width: null,
@@ -36,7 +36,7 @@ export const EXPORTS: ExportPreset[] = [
   },
   {
     id: 'square',
-    label: 'Square',
+    label: '1:1',
     hint: '1:1 · 1080×1080. Drag the frame.',
     aspect: 1,
     width: 1080,
