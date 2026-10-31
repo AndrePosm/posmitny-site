@@ -977,45 +977,47 @@ export function Editor() {
   return (
     <div className="dk">
       <header className="dk-bar">
-        <h1 className="dk-brand"><Link href="/fun">Darkroom</Link></h1>
-        <div className="dk-seg" role="group" aria-label="Colour or black and white">
-          <button type="button" aria-pressed={!bw} onClick={() => { if (bw) toggleBw(); }}>Colour</button>
-          <button type="button" aria-pressed={bw} aria-keyshortcuts="B" onClick={() => { if (!bw) toggleBw(); }}>B&amp;W</button>
-        </div>
-        <button type="button" className="dk-ghost" aria-pressed={split} aria-keyshortcuts="\\" aria-label="Before / after" onClick={toggleSplit}>
-          <span className="dk-wide">Before / after</span>
-          <span className="dk-narrow" aria-hidden>⇄</span>
-        </button>
-        <span className="dk-sp" />
-        <p className="dk-lock" title="Photos are graded on this device">
-          <span aria-hidden>🔒</span>
-          <span className="dk-lock-text">Nothing is uploaded</span>
-        </p>
-        <button type="button" className="dk-icon" aria-label="Shortcuts" aria-keyshortcuts="?" onClick={() => setHelp(true)}>?</button>
-        <button
-          type="button"
-          className="dk-ghost dk-match"
-          disabled={locked}
-          onClick={() => refInput.current?.click()}
-          onDragEnter={(event) => { event.preventDefault(); event.stopPropagation(); setRefOver(true); }}
-          onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
-          onDragLeave={() => setRefOver(false)}
-          onDrop={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setRefOver(false);
-            void onReference(event.dataTransfer.files?.[0]);
-          }}
-        >
-          <span className="dk-wide">{busy === 'matching' ? 'Matching…' : 'Match reference'}</span>
-          <span className="dk-narrow" aria-hidden>Ref</span>
-        </button>
-        <div className="dk-splitbtn" data-menu-root>
-          <button type="button" className="dk-ghost dk-main" disabled={locked || selection.length === 0} onClick={syncSelected}>
-            <span className="dk-wide">Sync to {selection.length}</span>
-            <span className="dk-narrow">Sync {selection.length}</span>
+        <div className="dk-bar-scroll">
+          <h1 className="dk-brand"><Link href="/fun">Darkroom</Link></h1>
+          <div className="dk-seg" role="group" aria-label="Colour or black and white">
+            <button type="button" aria-pressed={!bw} onClick={() => { if (bw) toggleBw(); }}>Colour</button>
+            <button type="button" aria-pressed={bw} aria-keyshortcuts="B" onClick={() => { if (!bw) toggleBw(); }}>B&amp;W</button>
+          </div>
+          <button type="button" className="dk-ghost" aria-pressed={split} aria-keyshortcuts="\\" aria-label="Before / after" onClick={toggleSplit}>
+            <span className="dk-wide">Before / after</span>
+            <span className="dk-narrow" aria-hidden>⇄</span>
           </button>
-          <button type="button" className="dk-ghost dk-more" aria-label="Sync options" aria-expanded={menu === 'sync'} disabled={locked} onClick={(event) => openMenu('sync', event.currentTarget.parentElement ?? event.currentTarget)}>▾</button>
+          <span className="dk-sp" />
+          <p className="dk-lock" title="Photos are graded on this device">
+            <span aria-hidden>🔒</span>
+            <span className="dk-lock-text">Nothing is uploaded</span>
+          </p>
+          <button type="button" className="dk-icon" aria-label="Shortcuts" aria-keyshortcuts="?" onClick={() => setHelp(true)}>?</button>
+          <button
+            type="button"
+            className="dk-ghost dk-match"
+            disabled={locked}
+            onClick={() => refInput.current?.click()}
+            onDragEnter={(event) => { event.preventDefault(); event.stopPropagation(); setRefOver(true); }}
+            onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); }}
+            onDragLeave={() => setRefOver(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setRefOver(false);
+              void onReference(event.dataTransfer.files?.[0]);
+            }}
+          >
+            <span className="dk-wide">{busy === 'matching' ? 'Matching…' : 'Match reference'}</span>
+            <span className="dk-narrow" aria-hidden>Ref</span>
+          </button>
+          <div className="dk-splitbtn" data-menu-root>
+            <button type="button" className="dk-ghost dk-main" disabled={locked || selection.length === 0} onClick={syncSelected}>
+              <span className="dk-wide">Sync to {selection.length}</span>
+              <span className="dk-narrow">Sync {selection.length}</span>
+            </button>
+            <button type="button" className="dk-ghost dk-more" aria-label="Sync options" aria-expanded={menu === 'sync'} disabled={locked} onClick={(event) => openMenu('sync', event.currentTarget.parentElement ?? event.currentTarget)}>▾</button>
+          </div>
         </div>
         <div className={`dk-splitbtn dk-go${progress ? ' is-busy' : ''}`} data-menu-root>
           <button type="button" className="dk-pri dk-main" aria-keyshortcuts="E" disabled={!ready || locked} onClick={() => { void runExport(exportIds, false); }}>
