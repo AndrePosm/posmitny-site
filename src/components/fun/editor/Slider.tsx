@@ -2,17 +2,34 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { NEUTRAL_GRADE, type Grade } from '@/content/fun';
-import type { ADJUSTMENTS } from '@/content/fun';
 import { formatGradeValue, parseGradeValue } from './format';
 
-type Spec = (typeof ADJUSTMENTS)[number];
+type Spec = {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  hint: (value: number) => string;
+};
+
+function isGradeKey(key: string): key is keyof Grade {
+  return Object.prototype.hasOwnProperty.call(NEUTRAL_GRADE, key);
+}
 
 function clamp(spec: Spec, value: number): number {
   return Math.max(spec.min, Math.min(spec.max, value));
 }
 
+function parsePlain(text: string, min: number, max: number): number | null {
+  const cleaned = text.trim().replace(/−/g, '-').replace(/\s/g, '');
+  if (!cleaned || cleaned === '+' || cleaned === '-') return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
 /** One grade row: label, bipolar track, editable number. Double-click or double-tap resets it. */
-export function GradeSlider({ spec, value, onChange }: { spec: Spec; value: number; onChange: (value: number) => void }) {
+export function GradeSlider({ spec, value, onChange, neutral }: { spec: Spec; value: number; onChange: (value: number) => void; neutral?: number }) {
   const hitRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const valueRef = useRef(value);
@@ -23,14 +40,14 @@ export function GradeSlider({ spec, value, onChange }: { spec: Spec; value: numb
   const [dragging, setDragging] = useState(false);
 
   valueRef.current = value;
-  const fallback = NEUTRAL_GRADE[spec.key];
+  const fallback = neutral ?? (isGradeKey(spec.key) ? NEUTRAL_GRADE[spec.key] : 0);
   const span = spec.max - spec.min || 1;
   const pct = (value - spec.min) / span;
   const mid = spec.min < 0 ? (0 - spec.min) / span : 0;
   const fillLeft = (spec.min < 0 ? Math.min(pct, mid) : 0) * 100;
   const fillWidth = (spec.min < 0 ? Math.abs(pct - mid) : pct) * 100;
   const warm = spec.key === 'warmth';
-  const shown = formatGradeValue(spec.key, value, spec.min);
+  const shown = isGradeKey(spec.key) ? formatGradeValue(spec.key, value, spec.min) : (value === 0 ? '0' : String(value));
 
   useEffect(() => {
     if (editing) inputRef.current?.select();
@@ -58,7 +75,9 @@ export function GradeSlider({ spec, value, onChange }: { spec: Spec; value: numb
   }
 
   function commitDraft() {
-    const parsed = parseGradeValue(spec.key, draft, spec.min, spec.max);
+    const parsed = isGradeKey(spec.key)
+      ? parseGradeValue(spec.key, draft, spec.min, spec.max)
+      : parsePlain(draft, spec.min, spec.max);
     if (parsed !== null) {
       valueRef.current = parsed;
       onChange(parsed);
@@ -171,7 +190,7 @@ export function GradeSlider({ spec, value, onChange }: { spec: Spec; value: numb
           className="dk-val"
           aria-label={`Edit ${spec.label}, ${shown}`}
           onClick={() => {
-            const raw = spec.key === 'exposure' ? (value / 100).toFixed(2) : String(value);
+            const raw = spec.key === 'exposure' ? (value / 100).toFixed(2) : String(Math.round(value));
             setDraft(raw);
             setEditing(true);
           }}
